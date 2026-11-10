@@ -406,7 +406,7 @@ create trigger matches_settle
   for each row execute function private.matches_after_change();
 
 create or replace function private.matches_touch()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql set search_path = public as $$
 begin
   new.updated_at := now();
   return new;
@@ -758,8 +758,9 @@ revoke execute on all functions in schema public  from public, anon;
 revoke execute on all functions in schema private from public, anon, authenticated;
 
 grant execute on function
-  public.match_odds(bigint), public.is_admin(), public.is_group_member(uuid), public.setting_num(text, numeric)
+  public.match_odds(bigint), public.setting_num(text, numeric)
   to anon, authenticated;
+grant execute on function public.is_admin(), public.is_group_member(uuid) to authenticated;
 grant execute on function
   public.place_bet(bigint, text, integer), public.cancel_bet(bigint), public.set_username(text),
   public.create_group(text), public.join_group(text), public.leave_group(uuid),
