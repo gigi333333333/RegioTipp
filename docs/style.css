@@ -260,3 +260,39 @@ div.pop, .invite-card.pop { display: block; }
 .gain a { color: #2a2000; font-weight: 700; }
 
 .confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 50; }
+
+/* ---------- Profilbilder & Ranglisten ---------- */
+.av { --s: 36px; position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: var(--s); height: var(--s); border-radius: 50%; overflow: hidden; background: var(--brand-soft);
+  border: 1px solid var(--line); vertical-align: middle; }
+.av::before { content: attr(data-i); font-weight: 800; color: var(--brand); font-size: calc(var(--s) * .45); }
+.av img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.av.crest { background: #fff; }
+.av.crest img { object-fit: contain; padding: 14%; }
+.av.photo img, .av.crest img { background: inherit; }
+.me-link { display: inline-flex; align-items: center; gap: 8px; color: #fff; text-decoration: none; font-weight: 600; }
+.me-link .av { border-color: rgba(255,255,255,.6); }
+
+.board td { vertical-align: middle; }
+.board td.rk { font-weight: 700; color: var(--muted); width: 28px; }
+.who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.who-t { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.who-t b, .who-t span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.podium { display: grid; grid-template-columns: repeat(3, 1fr); align-items: end; gap: 8px; margin: 14px 0 10px; }
+.pod { display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 0; }
+.pod-name { font-weight: 700; font-size: 14px; margin-top: 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pod-pts { font-size: 13px; color: var(--muted); }
+.pod-step { width: 100%; margin-top: 6px; border-radius: 12px 12px 0 0; display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 8px; font-size: 26px; background: var(--brand-soft); }
+.pod-1 .pod-step { height: 86px; background: linear-gradient(#f7d86a, #f0c43c); }
+.pod-2 .pod-step { height: 62px; background: linear-gradient(#e6e9ec, #c9ced3); }
+.pod-3 .pod-step { height: 46px; background: linear-gradient(#f0c9a4, #d99a64); }
+.pod-1 .av { box-shadow: 0 0 0 3px #f0c43c; }
+
+.profile-head { text-align: center; margin: 4px 0 12px; }
+.profile-head h1 { margin: 10px 0 2px; }
+.av-edit { position: relative; display: inline-block; cursor: pointer; }
+.av-badge { position: absolute; right: 2px; bottom: 2px; width: 34px; height: 34px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; background: var(--brand); color: #fff; font-size: 16px; border: 3px solid var(--bg); }
+.result .chev { font-size: 22px; color: var(--muted); }

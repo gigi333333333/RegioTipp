@@ -82,7 +82,7 @@ const appUrl = () => location.origin + location.pathname;
 
 async function loadProfile() {
   if (!state.session) { state.profile = null; return; }
-  const { data, error } = await sb.from("profiles").select("*").eq("id", state.session.user.id).maybeSingle();
+  const { data, error } = await sb.from("profile_cards").select("*").eq("id", state.session.user.id).maybeSingle();
   if (error) throw error;
   state.profile = data;
 }
@@ -105,6 +105,14 @@ async function loadGroups(force = false) {
   if (error) throw error;
   state.groups = data;
   return data;
+}
+
+// Profilbild: eigenes Foto (rund, gefüllt) oder Vereinswappen (eingepasst); Initiale als Rückfall
+function avatar(url, name, size = 36) {
+  const initial = esc((String(name || "?").trim()[0] || "?").toUpperCase());
+  const photo = url && url.includes("/storage/v1/object/public/avatars/");
+  const img = url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : "";
+  return `<span class="av ${photo ? "photo" : url ? "crest" : ""}" style="--s:${size}px" data-i="${initial}" aria-hidden="true">${img}</span>`;
 }
 
 function vibrate(ms = 12) { try { navigator.vibrate?.(ms); } catch { /* egal */ } }
@@ -138,7 +146,7 @@ function confetti(amount = 120) {
 
 function renderTop() {
   if (state.profile) {
-    $topRight.innerHTML = `<a href="#/profil" style="color:#fff;text-decoration:none">👤 ${esc(state.profile.username)}</a>`;
+    $topRight.innerHTML = `<a href="#/profil" class="me-link">${avatar(state.profile.picture, state.profile.username, 30)}<span>${esc(state.profile.username)}</span></a>`;
   } else {
     $topRight.textContent = "";
   }
@@ -869,13 +877,39 @@ async function renderSpielDetail(id) {
 // ---------------------------------------------------------------------------
 
 
-async function renderRangliste(sel = "gesamt") {
+function boardRows(data, me, { tips = true } = {}) {
+  return data.map((r) => html`
+    <tr class="${r.user_id === me ? "me" : ""}">
+      <td class="rk">${r.rank}</td>
+      <td class="name"><span class="who">${avatar(r.picture, r.username, 32)}<span class="who-t"><b>${esc(r.username)}</b>${r.team_name ? `<span class="muted small">${esc(r.team_name)}</span>` : ""}</span></span></td>
+      ${tips ? `<td>${r.tips_count}</td>` : ""}<td>${r.exact_count}</td><td><b>${r.points}</b></td>
+    </tr>`).join("");
+}
+
+function podium(data) {
+  const top = data.filter((r) => r.points > 0).slice(0, 3);
+  if (top.length < 2) return "";
+  const order = [top[1], top[0], top[2]].filter(Boolean);
+  const medal = { 1: "🥇", 2: "🥈", 3: "🥉" };
+  return `<div class="podium">${order.map((r) => html`
+    <div class="pod pod-${r.rank <= 3 ? r.rank : 3}">
+      ${avatar(r.picture, r.username, r.rank === 1 ? 64 : 52)}
+      <div class="pod-name">${esc(r.username)}</div>
+      <div class="pod-pts">${r.points} P</div>
+      <div class="pod-step">${medal[r.rank] ?? r.rank}</div>
+    </div>`).join("")}</div>`;
+}
+
+async function renderRangliste(sel = "alle") {
   const groups = await loadGroups(true);
+  const period = store.get("period", "week");
+  if (sel === "gesamt") sel = "alle";
+
   const chips = html`
     <div class="chips">
-      <a class="chip ${sel === "gesamt" ? "on" : ""}" href="#/rangliste/gesamt" style="display:flex;align-items:center;text-decoration:none">Gesamt</a>
-      ${groups.map((g) => `<a class="chip ${sel === g.id ? "on" : ""}" href="#/rangliste/${g.id}" style="display:flex;align-items:center;text-decoration:none">${esc(g.name)}</a>`).join("")}
-      <a class="chip ${sel === "gruppen" ? "on" : ""}" href="#/rangliste/gruppen" style="display:flex;align-items:center;text-decoration:none">Gruppen-Vergleich</a>
+      <a class="chip ${sel === "alle" ? "on" : ""}" href="#/rangliste/alle">🌍 Alle</a>
+      ${groups.map((g) => `<a class="chip ${sel === g.id ? "on" : ""}" href="#/rangliste/${g.id}">${esc(g.name)}</a>`).join("")}
+      <a class="chip ${sel === "gruppen" ? "on" : ""}" href="#/rangliste/gruppen">Tipprunden-Vergleich</a>
     </div>`;
 
   if (sel === "gruppen") {
@@ -883,32 +917,42 @@ async function renderRangliste(sel = "gesamt") {
     if (error) throw error;
     return setView(html`
       <h1>Rangliste</h1>${chips}
-      <p class="muted small">Gruppen werden nach dem Punkte-Durchschnitt ihrer Mitglieder verglichen.</p>
+      <p class="muted small">Tipprunden werden nach dem Punkte-Durchschnitt ihrer Mitglieder verglichen.</p>
       ${data.length ? `<div class="card"><table class="tbl">
-        <tr><th>#</th><th class="l">Gruppe</th><th>Mitgl.</th><th>Ø Punkte</th></tr>
+        <tr><th>#</th><th class="l">Tipprunde</th><th>Mitgl.</th><th>Ø Punkte</th></tr>
         ${data.map((r) => `<tr class="${r.is_member ? "me" : ""}"><td>${r.rank}</td><td class="name">${esc(r.name)}</td><td>${r.members}</td><td><b>${r.avg_points}</b></td></tr>`).join("")}
-      </table></div>` : `<div class="empty">Noch keine Gruppen.</div>`}
+      </table></div>` : `<div class="empty">Noch keine Tipprunden.</div>`}
     `);
   }
 
-  const groupId = sel === "gesamt" ? null : sel;
-  const { data, error } = await sb.rpc("leaderboard", { p_group_id: groupId });
+  const groupId = sel === "alle" ? null : sel;
+  const { data, error } = await sb.rpc("leaderboard", { p_group_id: groupId, p_period: period });
   if (error) throw error;
   const me = state.session.user.id;
   const mine = data.find((r) => r.user_id === me);
   setView(html`
-    <h1>Rangliste</h1>${chips}
+    <h1>Rangliste</h1>
+    <div class="tabs2">
+      <button data-period="week" class="${period === "week" ? "on" : ""}">🔥 Diese Woche</button>
+      <button data-period="all" class="${period === "all" ? "on" : ""}">🏆 All Time</button>
+    </div>
+    ${chips}
+    ${period === "week" ? `<p class="muted small">Punkte aus Spielen seit Montag. Jeden Montag startet das Rennen neu.</p>` : ""}
+    ${podium(data)}
     ${mine ? `<div class="stat">
-      <div class="card"><b>${mine.rank}.</b><span>Rang</span></div>
+      <div class="card"><b>${mine.rank}.</b><span>von ${data.length}</span></div>
       <div class="card"><b>${mine.points}</b><span>Punkte</span></div>
-      <div class="card"><b>${mine.exact_count}</b><span>genau richtig</span></div>
+      <div class="card"><b>${mine.exact_count}</b><span>🎯 genau richtig</span></div>
     </div>` : ""}
-    <div class="card"><table class="tbl">
-      <tr><th>#</th><th class="l">Spieler</th><th title="ausgewertete Tipps">Tipps</th><th title="genaue Resultate">🎯</th><th>Punkte</th></tr>
-      ${data.map((r) => `<tr class="${r.user_id === me ? "me" : ""}"><td>${r.rank}</td><td class="name">${esc(r.username)}</td><td>${r.tips_count}</td><td>${r.exact_count}</td><td><b>${r.points}</b></td></tr>`).join("")}
+    <div class="card" style="padding:4px 10px"><table class="tbl board">
+      <tr><th>#</th><th class="l">Spieler:in</th><th title="ausgewertete Tipps">Tipps</th><th title="genaue Resultate">🎯</th><th>Punkte</th></tr>
+      ${boardRows(data, me)}
     </table></div>
     <p class="muted small">Bei Punktgleichheit entscheidet die Anzahl genau richtiger Resultate.</p>
   `);
+  for (const b of $view.querySelectorAll("[data-period]")) {
+    b.onclick = () => { store.set("period", b.dataset.period); vibrate(); renderRangliste(sel); };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -944,17 +988,18 @@ async function renderGruppe(id) {
   if (error) throw error;
   const link = `${appUrl()}?join=${g.invite_code}`;
   const me = state.session.user.id;
-  const medal = (r) => (r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "🥉" : r);
   setView(html`
     <p><a href="#/gruppen">‹ Tipprunden</a></p>
     <h1 style="margin-bottom:2px">${esc(g.name)}</h1>
     ${g.team_label ? `<p class="muted" style="margin-top:0">⚽ ${esc(g.team_label)} · ${esc(g.source_name ?? "")} ${esc(g.league_name ?? "")}</p>` : ""}
     <a class="btn primary block big" href="#/spiele/${g.id}">📝 Spiele tippen</a>
     <h2>Rangliste</h2>
-    <div class="card"><table class="tbl">
-      <tr><th>#</th><th class="l">Spieler</th><th title="genaue Resultate">🎯</th><th>Punkte</th></tr>
-      ${board.map((r) => `<tr class="${r.user_id === me ? "me" : ""}"><td>${medal(r.rank)}</td><td class="name">${esc(r.username)}</td><td>${r.exact_count}</td><td><b>${r.points}</b></td></tr>`).join("")}
+    ${podium(board)}
+    <div class="card" style="padding:4px 10px"><table class="tbl board">
+      <tr><th>#</th><th class="l">Spieler:in</th><th title="genaue Resultate">🎯</th><th>Punkte</th></tr>
+      ${boardRows(board, me, { tips: false })}
     </table></div>
+    <p class="center small"><a href="#/rangliste/${g.id}">Wochen-Rangliste dieser Tipprunde ›</a></p>
     ${board.length < 3 ? `<p class="muted small center">Zu zweit ist's ein Duell, ab drei wird's eine Liga. Lade mehr Leute ein!</p>` : ""}
     <div class="card center">
       <div class="muted small">Einladungscode</div>
@@ -1043,22 +1088,107 @@ function renderMehr() {
   $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/spiele"; };
 }
 
+// Bild quadratisch zuschneiden und auf 256 px verkleinern (spart Speicher und Daten)
+async function squareJpeg(file, size = 256) {
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => null);
+  const src = bmp ?? await new Promise((res, rej) => {
+    const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(file);
+  });
+  const w = src.width, h = src.height, s = Math.min(w, h);
+  const c = document.createElement("canvas"); c.width = c.height = size;
+  c.getContext("2d").drawImage(src, (w - s) / 2, (h - s) / 2, s, s, 0, 0, size, size);
+  return await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+}
+
 function renderProfil() {
+  const p = state.profile;
+  const hasPhoto = !!p.avatar_url;
   setView(html`
     <p><a href="#/mehr">‹ Mehr</a></p>
-    <h1>Profil</h1>
-    <form id="prof" class="card">
-      <label class="field"><span>Benutzername</span>
-        <input type="text" name="username" value="${esc(state.profile.username)}" minlength="2" maxlength="30" required></label>
-      <p class="muted small">E-Mail: ${esc(state.session.user.email)}</p>
+    <div class="profile-head">
+      <label class="av-edit" title="Profilbild ändern">
+        ${avatar(p.picture, p.username, 112)}
+        <span class="av-badge">📷</span>
+        <input type="file" id="file" accept="image/*" hidden>
+      </label>
+      <h1>${esc(p.username)}</h1>
+      <p class="muted" style="margin:0">${p.team_name ? `⚽ ${esc(p.team_name)}` : "Noch kein Verein gewählt"}</p>
+      <div class="row" style="justify-content:center;margin-top:10px">
+        <button class="btn small" id="pick">📷 Foto wählen</button>
+        ${hasPhoto && p.team_logo ? `<button class="btn small" id="crest">🛡️ Vereinswappen verwenden</button>` : ""}
+        ${hasPhoto && !p.team_logo ? `<button class="btn small" id="crest">Foto entfernen</button>` : ""}
+      </div>
+    </div>
+
+    <h2>Mein Verein</h2>
+    <p class="muted small">Das Wappen deines Vereins ist dein Profilbild, solange du kein eigenes Foto hast.</p>
+    <input type="search" id="teamq" class="search-big" placeholder="🔍 Verein oder Mannschaft suchen" autocomplete="off">
+    <div id="teamres" class="results"></div>
+
+    <h2>Name</h2>
+    <form id="prof" class="card row">
+      <input class="grow" type="text" name="username" value="${esc(p.username)}" minlength="2" maxlength="30" required>
       <button class="btn primary">Speichern</button>
     </form>
-    <form id="pw" class="card">
-      <label class="field"><span>Neues Passwort</span><input type="password" name="pw" minlength="6" autocomplete="new-password" required></label>
-      <button class="btn">Passwort ändern</button>
+    <h2>Passwort</h2>
+    <form id="pw" class="card row">
+      <input class="grow" type="password" name="pw" minlength="6" autocomplete="new-password" required placeholder="Neues Passwort">
+      <button class="btn">Ändern</button>
     </form>
+    <p class="muted small">E-Mail: ${esc(state.session.user.email)}</p>
     <p><button class="btn danger block" id="logout">Abmelden</button></p>
   `);
+
+  const file = $view.querySelector("#file");
+  $view.querySelector("#pick").onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files?.[0];
+    if (!f) return;
+    try {
+      toast("Bild wird hochgeladen …");
+      const blob = await squareJpeg(f);
+      const path = `${state.session.user.id}/avatar.jpg`;
+      const { error: upErr } = await sb.storage.from("avatars").upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+      if (upErr) throw upErr;
+      const url = sb.storage.from("avatars").getPublicUrl(path).data.publicUrl + `?v=${Date.now()}`;
+      const { error } = await sb.rpc("set_avatar", { p_url: url });
+      if (error) throw error;
+      await loadProfile(); renderTop(); renderProfil();
+      vibrate(); toast("Neues Profilbild gespeichert. Sieht gut aus! 😎");
+    } catch (e) { toast(errMsg(e), true); }
+  };
+  $view.querySelector("#crest")?.addEventListener("click", async () => {
+    const { error } = await sb.rpc("set_avatar", { p_url: null });
+    if (error) return toast(errMsg(error), true);
+    await sb.storage.from("avatars").remove([`${state.session.user.id}/avatar.jpg`]);
+    await loadProfile(); renderTop(); renderProfil();
+    toast(p.team_logo ? "Du zeigst jetzt dein Vereinswappen." : "Foto entfernt.");
+  });
+
+  const q = $view.querySelector("#teamq"), res = $view.querySelector("#teamres");
+  let t, seq = 0;
+  q.addEventListener("input", () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      const v = q.value.trim();
+      if (v.length < 2) { res.innerHTML = ""; return; }
+      const my = ++seq;
+      const { data, error } = await sb.rpc("search_teams", { p_query: v });
+      if (my !== seq) return;
+      if (error) { res.innerHTML = `<p class="err">${esc(errMsg(error))}</p>`; return; }
+      res.innerHTML = data.slice(0, 8).map((r, i) => `<button class="result" data-i="${i}"><span class="result-main"><b>${esc(r.label)}</b><br><span class="muted small">${esc(r.source_name)} · ${esc(r.league_name)}</span></span><span class="chev">›</span></button>`).join("")
+        || `<div class="empty">Nichts gefunden.</div>`;
+      for (const b of res.querySelectorAll(".result")) {
+        b.onclick = async () => {
+          const { error: er } = await sb.rpc("set_my_team", { p_team_id: data[Number(b.dataset.i)].team_id });
+          if (er) return toast(errMsg(er), true);
+          await loadProfile(); renderTop(); renderProfil();
+          vibrate(); toast("Verein gespeichert ⚽");
+        };
+      }
+    }, 200);
+  });
+
   $view.querySelector("#prof").onsubmit = async (e) => {
     e.preventDefault();
     const { error } = await sb.rpc("set_username", { p_username: new FormData(e.target).get("username") });
@@ -1073,6 +1203,8 @@ function renderProfil() {
   };
   $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/spiele"; };
 }
+
+
 
 function renderRegeln() {
   setView(html`

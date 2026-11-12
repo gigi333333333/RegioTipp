@@ -84,6 +84,7 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Prom
 type Standing = {
   fs_team_id: string; team_name: string; rank: number; played: number;
   won: number; drawn: number; lost: number; gf: number; ga: number; points: number;
+  logo: string | null;
 };
 type Group = { fs_group_id: string; name: string; standings: Standing[] };
 
@@ -107,6 +108,11 @@ export function parseLeague(html: string): { season: string | null; groups: Grou
       if (!teamId) continue;
       const teamName = decode(cells[1].match(/<span class="truncate">([^<]*)<\/span>/)?.[1] ?? "") ||
         stripTags(cells[1]);
+      // Vereinswappen: <img src="/_next/image/?url=https%3A%2F%2F...png%3Fv%3D...&amp;w=48">
+      const logoEnc = cells[1].match(/src="\/_next\/image\/\?url=([^&"]+)/)?.[1];
+      let logo: string | null = null;
+      try { logo = logoEnc ? decodeURIComponent(logoEnc) : null; } catch { logo = null; }
+      if (logo && !/^https:\/\/[a-z0-9.-]+\.amazonaws\.com\//.test(logo)) logo = null;
       const goals = stripTags(cells[6]).match(/(\d+)\s*-\s*(\d+)/);
       const num = (s: string) => parseInt(stripTags(s), 10) || 0;
       standings.push({
@@ -120,6 +126,7 @@ export function parseLeague(html: string): { season: string | null; groups: Grou
         gf: goals ? parseInt(goals[1], 10) : 0,
         ga: goals ? parseInt(goals[2], 10) : 0,
         points: num(cells[7]),
+        logo,
       });
     }
     if (standings.length > 0) groups.push({ fs_group_id: id, name, standings });
