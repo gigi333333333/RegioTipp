@@ -99,6 +99,43 @@ async function loadMeta() {
   state.leagues = b.data;
 }
 
+async function loadGroups(force = false) {
+  if (state.groups && !force) return state.groups;
+  const { data, error } = await sb.rpc("my_groups");
+  if (error) throw error;
+  state.groups = data;
+  return data;
+}
+
+function vibrate(ms = 12) { try { navigator.vibrate?.(ms); } catch { /* egal */ } }
+
+// Kleines Konfetti ohne Bibliothek
+function confetti(amount = 120) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const c = document.createElement("canvas");
+  c.className = "confetti";
+  document.body.appendChild(c);
+  const ctx = c.getContext("2d");
+  const W = c.width = innerWidth * devicePixelRatio, H = c.height = innerHeight * devicePixelRatio;
+  const colors = ["#0b6e4f", "#3fbf8f", "#f0c43c", "#d81e48", "#4a90e2", "#ffffff"];
+  const parts = Array.from({ length: amount }, () => ({
+    x: W / 2 + (Math.random() - .5) * W * .3, y: H * .35,
+    vx: (Math.random() - .5) * 26 * devicePixelRatio, vy: (-Math.random() * 22 - 8) * devicePixelRatio,
+    s: (6 + Math.random() * 6) * devicePixelRatio, r: Math.random() * 6, vr: (Math.random() - .5) * .4,
+    col: colors[(Math.random() * colors.length) | 0],
+  }));
+  let t = 0;
+  (function tick() {
+    ctx.clearRect(0, 0, W, H);
+    for (const p of parts) {
+      p.vy += .9 * devicePixelRatio; p.vx *= .985; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.fillStyle = p.col;
+      ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); ctx.restore();
+    }
+    if (++t < 140) requestAnimationFrame(tick); else c.remove();
+  })();
+}
+
 function renderTop() {
   if (state.profile) {
     $topRight.innerHTML = `<a href="#/profil" style="color:#fff;text-decoration:none">👤 ${esc(state.profile.username)}</a>`;
@@ -129,24 +166,36 @@ async function route() {
   const pending = store.get("pendingJoin", null);
   if (pending) {
     store.set("pendingJoin", null);
-    if (location.search) history.replaceState(null, "", location.pathname + "#/gruppen");
+    if (location.search) history.replaceState(null, "", location.pathname);
     try {
       const { data, error } = await sb.rpc("join_group", { p_code: pending });
       if (error) throw error;
-      toast(`Du bist der Gruppe „${data.name}“ beigetreten.`);
-    } catch (e) { toast(errMsg(e), true); }
-    location.hash = "#/gruppen";
+      state.groups = null;
+      location.hash = `#/willkommen/${data.id}`;
+    } catch (e) { toast(errMsg(e), true); location.hash = "#/start"; }
     return;
   }
 
+  // Wer noch in keiner Tipprunde ist, landet zuerst im Onboarding
+  const flow = ["start", "neu", "beitreten", "willkommen"].includes(page);
+  if (!flow && (page === "spiele" || !page) && !store.get("onboardSkip", false)) {
+    const groups = await loadGroups().catch(() => []);
+    if (!groups.length) { location.hash = "#/start"; return; }
+  }
+
   const tab = { spiele: "spiele", resultate: "resultate", spiel: "resultate", rangliste: "rangliste",
-                gruppen: "gruppen", gruppe: "gruppen" }[page] ?? "mehr";
+                gruppen: "gruppen", gruppe: "gruppen", neu: "gruppen", beitreten: "gruppen" }[page] ?? "mehr";
   for (const a of $tabbar.querySelectorAll("a")) a.classList.toggle("on", a.dataset.tab === tab);
+  $tabbar.hidden = page === "start" || page === "willkommen";
 
   setView(`<div class="loading">Laden …</div>`);
   try {
     switch (page) {
-      case "spiele": return await renderSpiele();
+      case "start": return renderStart();
+      case "neu": return await renderNeu(arg);
+      case "beitreten": return renderBeitreten(arg);
+      case "willkommen": return await renderWillkommen(arg);
+      case "spiele": return await renderSpiele(arg);
       case "resultate": return await renderResultate();
       case "spiel": return await renderSpielDetail(Number(arg));
       case "rangliste": return await renderRangliste(arg);
@@ -171,7 +220,7 @@ sb.auth.onAuthStateChange((event, session) => {
   const changed = (state.session?.user?.id ?? null) !== (session?.user?.id ?? null);
   state.session = session;
   if (event === "PASSWORD_RECOVERY") { state.recovery = true; route(); return; }
-  if (changed) { state.profile = null; route(); }
+  if (changed) { state.profile = null; state.groups = null; route(); }
 });
 
 (async () => {
@@ -184,33 +233,66 @@ sb.auth.onAuthStateChange((event, session) => {
 // Login / Registrieren
 // ---------------------------------------------------------------------------
 
-function renderAuth(mode = "login") {
-  setView(html`
-    <div class="auth">
-      <h1>Willkommen beim RegioTipp</h1>
-      <p class="muted">Tippe die Resultate der FVRZ-Spiele, sammle Punkte und miss dich mit deinen Freunden.</p>
-      <div class="tabs2">
-        <button data-mode="login" class="${mode === "login" ? "on" : ""}">Anmelden</button>
-        <button data-mode="register" class="${mode === "register" ? "on" : ""}">Registrieren</button>
-      </div>
-      <form id="authform" class="card">
-        ${mode === "register" ? `
-        <label class="field"><span>Benutzername (sichtbar in der Rangliste)</span>
-          <input type="text" name="username" minlength="2" maxlength="30" required autocomplete="nickname"></label>` : ""}
+async function renderAuth(mode = "register") {
+  // Einladung? Dann zeigen wir, wohin man eingeladen wurde.
+  const code = store.get("pendingJoin", null);
+  let invite = null;
+  if (code) {
+    const { data } = await sb.rpc("group_preview", { p_code: code });
+    invite = data?.[0] ?? null;
+  }
+
+  const hero = invite ? html`
+      <div class="hero">
+        <div class="hero-emoji">🎟️</div>
+        <h1>Du bist eingeladen!</h1>
+        <div class="invite-card">
+          <div class="invite-name">${esc(invite.name)}</div>
+          ${invite.team_label ? `<div class="muted">⚽ ${esc(invite.team_label)} · ${esc(invite.source_name ?? "")} ${esc(invite.league_name ?? "")}</div>` : ""}
+          <div class="muted small">${invite.members} ${invite.members === 1 ? "Mitglied" : "Mitglieder"} tippen schon mit</div>
+        </div>
+      </div>` : html`
+      <div class="hero">
+        <div class="hero-emoji">⚽</div>
+        <h1>Tippe die Spiele deines Vereins</h1>
+        <p class="hero-sub">Resultate tippen, Punkte sammeln und deine Freunde schlagen. Alle FVRZ-Ligen, von der 2. Liga bis zu den C-Junioren.</p>
+      </div>`;
+
+  const forms = {
+    register: html`
+      <form id="authform" class="card auth-card">
+        <label class="field"><span>Dein Name in der Rangliste</span>
+          <input type="text" name="username" minlength="2" maxlength="30" required autocomplete="nickname" placeholder="z.B. Gigi"></label>
         <label class="field"><span>E-Mail</span>
           <input type="email" name="email" required autocomplete="email"></label>
-        ${mode !== "reset" ? `
         <label class="field"><span>Passwort</span>
-          <input type="password" name="password" minlength="6" required autocomplete="${mode === "register" ? "new-password" : "current-password"}"></label>` : ""}
-        <button class="btn primary block" type="submit">${mode === "login" ? "Anmelden" : mode === "register" ? "Konto erstellen" : "Link senden"}</button>
-        ${mode === "login" ? `<p class="small" style="text-align:center"><a href="#" id="forgot">Passwort vergessen?</a></p>` : ""}
-        ${mode === "reset" ? `<p class="small" style="text-align:center"><a href="#" id="back">Zurück zur Anmeldung</a></p>` : ""}
-      </form>
-    </div>`);
+          <input type="password" name="password" minlength="6" required autocomplete="new-password" placeholder="mindestens 6 Zeichen"></label>
+        <button class="btn primary block big" type="submit">${invite ? "Beitreten & loslegen 🚀" : "Kostenlos starten 🚀"}</button>
+        <p class="small center">Schon dabei? <a href="#" data-mode="login">Anmelden</a></p>
+      </form>`,
+    login: html`
+      <form id="authform" class="card auth-card">
+        <label class="field"><span>E-Mail</span>
+          <input type="email" name="email" required autocomplete="email"></label>
+        <label class="field"><span>Passwort</span>
+          <input type="password" name="password" minlength="6" required autocomplete="current-password"></label>
+        <button class="btn primary block big" type="submit">Anmelden</button>
+        <p class="small center"><a href="#" data-mode="reset">Passwort vergessen?</a> · <a href="#" data-mode="register">Neu registrieren</a></p>
+      </form>`,
+    reset: html`
+      <form id="authform" class="card auth-card">
+        <label class="field"><span>E-Mail</span>
+          <input type="email" name="email" required autocomplete="email"></label>
+        <button class="btn primary block big" type="submit">Link senden</button>
+        <p class="small center"><a href="#" data-mode="login">Zurück zur Anmeldung</a></p>
+      </form>`,
+  };
 
-  for (const b of $view.querySelectorAll(".tabs2 button")) b.onclick = () => renderAuth(b.dataset.mode);
-  $view.querySelector("#forgot")?.addEventListener("click", (e) => { e.preventDefault(); renderAuth("reset"); });
-  $view.querySelector("#back")?.addEventListener("click", (e) => { e.preventDefault(); renderAuth("login"); });
+  setView(`<div class="auth">${hero}${forms[mode]}</div>`);
+
+  for (const a of $view.querySelectorAll("[data-mode]")) {
+    a.onclick = (e) => { e.preventDefault(); renderAuth(a.dataset.mode); };
+  }
 
   $view.querySelector("#authform").onsubmit = async (e) => {
     e.preventDefault();
@@ -228,7 +310,7 @@ function renderAuth(mode = "login") {
         });
         if (error) throw error;
         if (!data.session) {
-          setView(`<div class="auth card"><h1>Fast geschafft</h1><p>Wir haben dir ein Mail an <b>${esc(f.get("email"))}</b> geschickt. Klicke auf den Link darin, um dein Konto zu bestätigen.</p><p class="muted small">Kein Mail? Schau im Spam-Ordner nach.</p></div>`);
+          setView(`<div class="auth card"><div class="hero-emoji">📬</div><h1>Fast geschafft</h1><p>Wir haben dir ein Mail an <b>${esc(f.get("email"))}</b> geschickt. Klicke auf den Link darin, dann geht's los.</p><p class="muted small">Kein Mail? Schau im Spam-Ordner nach.</p></div>`);
         }
       } else {
         const { error } = await sb.auth.resetPasswordForEmail(f.get("email"), { redirectTo: appUrl() });
@@ -240,6 +322,209 @@ function renderAuth(mode = "login") {
       btn.disabled = false;
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding: Tipprunde starten oder beitreten
+// ---------------------------------------------------------------------------
+
+function steps(n, total = 3) {
+  return `<div class="steps" aria-label="Schritt ${n} von ${total}">${Array.from({ length: total }, (_, i) =>
+    `<span class="${i < n ? "on" : ""}"></span>`).join("")}</div>`;
+}
+
+function renderStart() {
+  setView(html`
+    <div class="onb">
+      <div class="hero">
+        <div class="hero-emoji bounce">👋</div>
+        <h1>Hoi ${esc(state.profile.username)}!</h1>
+        <p class="hero-sub">Tippen macht zusammen am meisten Spass. Wie willst du starten?</p>
+      </div>
+      <a class="choice" href="#/neu">
+        <span class="choice-emoji">✨</span>
+        <span><b>Neue Tipprunde starten</b><br><span class="muted">Wähle dein Team und lade deine Freunde ein</span></span>
+        <span class="chev">›</span>
+      </a>
+      <a class="choice" href="#/beitreten">
+        <span class="choice-emoji">🔑</span>
+        <span><b>Ich habe einen Code</b><br><span class="muted">Einer Tipprunde von Freunden beitreten</span></span>
+        <span class="chev">›</span>
+      </a>
+      <p class="center" style="margin-top:28px"><a href="#" id="skip" class="muted">Zuerst nur alleine tippen</a></p>
+    </div>
+  `);
+  $view.querySelector("#skip").onclick = (e) => {
+    e.preventDefault(); store.set("onboardSkip", true); location.hash = "#/spiele";
+  };
+}
+
+function renderBeitreten(code = "") {
+  setView(html`
+    <div class="onb">
+      <p><a href="#/start">‹ Zurück</a></p>
+      <div class="hero"><div class="hero-emoji">🔑</div><h1>Code eingeben</h1>
+        <p class="hero-sub">Den Code bekommst du von der Person, die dich eingeladen hat.</p></div>
+      <form id="join">
+        <input class="code-input" name="code" maxlength="6" required autocomplete="off" autocapitalize="characters"
+               spellcheck="false" placeholder="ABC123" value="${esc(code)}" aria-label="Einladungscode">
+        <div id="preview" class="preview"></div>
+        <button class="btn primary block big" id="joinbtn" disabled>Beitreten</button>
+      </form>
+    </div>
+  `);
+  const inp = $view.querySelector(".code-input");
+  const prev = $view.querySelector("#preview");
+  const btn = $view.querySelector("#joinbtn");
+  let t;
+  const check = async () => {
+    const v = inp.value.trim().toUpperCase();
+    if (v.length < 6) { prev.innerHTML = ""; btn.disabled = true; return; }
+    const { data } = await sb.rpc("group_preview", { p_code: v });
+    const g = data?.[0];
+    if (!g) { prev.innerHTML = `<span class="err">Diesen Code gibt es nicht.</span>`; btn.disabled = true; return; }
+    vibrate();
+    prev.innerHTML = `<div class="invite-card pop"><div class="invite-name">${esc(g.name)}</div>
+      ${g.team_label ? `<div class="muted">⚽ ${esc(g.team_label)} · ${esc(g.league_name ?? "")}</div>` : ""}
+      <div class="muted small">${g.members} ${g.members === 1 ? "Mitglied" : "Mitglieder"}</div></div>`;
+    btn.disabled = false;
+  };
+  inp.addEventListener("input", () => { inp.value = inp.value.toUpperCase(); clearTimeout(t); t = setTimeout(check, 250); });
+  if (code) check(); else setTimeout(() => inp.focus(), 50);
+  $view.querySelector("#join").onsubmit = async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    const { data, error } = await sb.rpc("join_group", { p_code: inp.value.trim() });
+    if (error) { btn.disabled = false; return toast(errMsg(error), true); }
+    state.groups = null;
+    location.hash = `#/willkommen/${data.id}`;
+  };
+}
+
+async function renderNeu() {
+  // Schritt 1: Mannschaft suchen
+  const step1 = () => {
+    setView(html`
+      <div class="onb">
+        <p><a href="javascript:history.back()">‹ Zurück</a></p>
+        ${steps(1)}
+        <h1>Welches Team willst du tippen?</h1>
+        <p class="muted">Suche deinen Verein und deine Mannschaft, z.B. <i>Witikon Ba</i>, <i>Wädenswil 1</i> oder <i>Kloten Frauen</i>.</p>
+        <input type="search" id="q" class="search-big" placeholder="🔍 Verein oder Mannschaft" autocomplete="off" enterkeyhint="search">
+        <div id="results" class="results"></div>
+      </div>
+    `);
+    const q = $view.querySelector("#q");
+    const res = $view.querySelector("#results");
+    let t, seq = 0;
+    const search = async () => {
+      const v = q.value.trim();
+      if (v.length < 2) { res.innerHTML = ""; return; }
+      const my = ++seq;
+      const { data, error } = await sb.rpc("search_teams", { p_query: v });
+      if (my !== seq) return;
+      if (error) { res.innerHTML = `<p class="err">${esc(errMsg(error))}</p>`; return; }
+      res.innerHTML = data.length ? data.map((r, i) => html`
+        <button class="result" data-i="${i}">
+          <span class="result-main"><b>${esc(r.label)}</b><br>
+            <span class="muted small">${esc(r.source_name)} · ${esc(r.league_name)}</span></span>
+          <span class="result-rank">${r.rank}.<br><span class="muted small">Platz</span></span>
+        </button>`).join("")
+        : `<div class="empty">Nichts gefunden. Versuch es mit dem Ortsnamen, z.B. <i>Witikon</i>.</div>`;
+      for (const b of res.querySelectorAll(".result")) b.onclick = () => { vibrate(); step2(data[Number(b.dataset.i)]); };
+    };
+    q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(search, 200); });
+    setTimeout(() => q.focus(), 50);
+  };
+
+  // Schritt 2: Tabellengruppe anzeigen und auswählen
+  const step2 = async (team) => {
+    setView(`<div class="loading">Laden …</div>`);
+    const [{ data: table, error }, { count }] = await Promise.all([
+      sb.from("league_standings").select("rank,played,points,team_id,teams(name)").eq("league_id", team.league_id).order("rank"),
+      sb.from("matches").select("id", { count: "exact", head: true }).eq("league_id", team.league_id)
+        .eq("status", "scheduled").gt("kickoff", new Date().toISOString()),
+    ]);
+    if (error) return toast(errMsg(error), true);
+    setView(html`
+      <div class="onb">
+        <p><a href="#" id="back">‹ Andere Mannschaft</a></p>
+        ${steps(2)}
+        <h1>${esc(team.source_name)}<br><span class="muted">${esc(team.league_name)}</span></h1>
+        <p>Deine Tipprunde tippt <b>alle Spiele dieser Gruppe</b>, die ganze Saison lang${count ? `, noch <b>${count} Spiele</b>` : ""}. Cupspiele von ${esc(team.label)} zählen doppelt.</p>
+        <div class="card"><table class="tbl">
+          <tr><th>#</th><th class="l">Team</th><th>Sp</th><th>P</th></tr>
+          ${table.map((r) => `<tr class="${r.team_id === team.team_id ? "me" : ""}"><td>${r.rank}</td><td class="name">${esc(r.teams?.name)}</td><td>${r.played}</td><td><b>${r.points}</b></td></tr>`).join("")}
+        </table></div>
+        <div class="sticky-cta"><button class="btn primary block big" id="pick">✅ Diese Gruppe auswählen</button></div>
+      </div>
+    `);
+    $view.querySelector("#back").onclick = (e) => { e.preventDefault(); step1(); };
+    $view.querySelector("#pick").onclick = () => { vibrate(); step3(team); };
+  };
+
+  // Schritt 3: Name der Tipprunde
+  const step3 = (team) => {
+    const suggestion = `Tipprunde ${team.label}`.slice(0, 40);
+    setView(html`
+      <div class="onb">
+        <p><a href="#" id="back">‹ Zurück</a></p>
+        ${steps(3)}
+        <div class="hero"><div class="hero-emoji">🏆</div><h1>Wie soll deine Tipprunde heissen?</h1></div>
+        <form id="create">
+          <input type="text" name="name" class="search-big" value="${esc(suggestion)}" minlength="2" maxlength="40" required>
+          <p class="muted small">Zum Beispiel „Familie Meier“, „Ba-Eltern“ oder „Stammtisch Witikon“.</p>
+          <button class="btn primary block big">Tipprunde erstellen 🎉</button>
+        </form>
+      </div>
+    `);
+    $view.querySelector("#back").onclick = (e) => { e.preventDefault(); step2(team); };
+    $view.querySelector("#create").onsubmit = async (e) => {
+      e.preventDefault();
+      const b = e.target.querySelector("button"); b.disabled = true;
+      const { data, error } = await sb.rpc("create_group", { p_name: new FormData(e.target).get("name"), p_team_id: team.team_id });
+      if (error) { b.disabled = false; return toast(errMsg(error), true); }
+      state.groups = null;
+      store.set("activeGroup", data.id);
+      location.hash = `#/willkommen/${data.id}`;
+    };
+  };
+
+  step1();
+}
+
+async function renderWillkommen(id) {
+  const groups = await loadGroups(true);
+  const g = groups.find((x) => x.id === id);
+  if (!g) { location.hash = "#/spiele"; return; }
+  store.set("activeGroup", g.id);
+  const link = `${appUrl()}?join=${g.invite_code}`;
+  const isOwner = g.owner_id === state.session.user.id;
+  setView(html`
+    <div class="onb">
+      <div class="hero">
+        <div class="hero-emoji bounce">🎉</div>
+        <h1>${isOwner ? "Deine Tipprunde ist bereit!" : `Willkommen in „${esc(g.name)}“!`}</h1>
+        ${g.team_label ? `<p class="hero-sub">⚽ ${esc(g.team_label)} · ${esc(g.source_name ?? "")} ${esc(g.league_name ?? "")}</p>` : ""}
+      </div>
+      <div class="card center">
+        <div class="muted small">${isOwner ? "Lade jetzt deine Freunde ein" : "Mehr Leute, mehr Spass. Lade weitere ein"}</div>
+        <div class="code" style="margin:8px 0">${esc(g.invite_code)}</div>
+        <button class="btn primary block big" id="share">📲 Freunde einladen</button>
+      </div>
+      <a class="btn block big" href="#/spiele/${g.id}" style="margin-top:12px">Jetzt erste Tipps abgeben →</a>
+    </div>
+  `);
+  confetti(); vibrate([20, 40, 20]);
+  $view.querySelector("#share").onclick = () => shareInvite(g, link);
+}
+
+async function shareInvite(g, link) {
+  const text = `⚽ Tippst du mit? Tipprunde „${g.name}“${g.team_label ? ` (${g.team_label})` : ""} im RegioTipp: ${link}`;
+  try {
+    if (navigator.share) await navigator.share({ title: "RegioTipp", text });
+    else { await navigator.clipboard.writeText(text); toast("Einladung kopiert. Jetzt in WhatsApp einfügen!"); }
+  } catch { /* abgebrochen */ }
 }
 
 function renderNewPassword() {
@@ -317,21 +602,47 @@ async function myTipsFor(ids) {
   return new Map(data.map((t) => [t.match_id, t]));
 }
 
-async function renderSpiele() {
+// Filter für die Spiele einer Tipprunde: Spiele ihrer Tabellengruppe(n) + Cupspiele des Teams
+function groupFilter(q, g) {
+  const parts = [];
+  if (g.league_ids?.length) parts.push(`league_id.in.(${g.league_ids.join(",")})`);
+  if (g.team_id) parts.push(`and(is_cup.eq.true,or(home_team_id.eq.${g.team_id},away_team_id.eq.${g.team_id}))`);
+  return parts.length ? q.or(parts.join(",")) : q.eq("id", -1);
+}
+
+// Neue Punkte seit dem letzten Besuch feiern
+async function pointsBanner() {
+  const { data } = await sb.from("tips").select("points").eq("user_id", state.session.user.id).not("points", "is", null);
+  const total = (data ?? []).reduce((s, t) => s + t.points, 0);
+  const key = "seenPoints_" + state.session.user.id;
+  const seen = store.get(key, null);
+  store.set(key, total);
+  if (seen !== null && total > seen) return { gained: total - seen, total };
+  return null;
+}
+
+async function renderSpiele(groupArg) {
   await loadMeta();
+  const groups = await loadGroups();
+  let active = groupArg || store.get("activeGroup", groups[0]?.id ?? "alle");
+  if (active !== "alle" && !groups.some((g) => g.id === active)) active = groups[0]?.id ?? "alle";
+  store.set("activeGroup", active);
+  const group = groups.find((g) => g.id === active);
   const f = store.get("filter", { cat: "", slug: "", league: "" });
-  let days = 7;
+  let days = group ? 14 : 7;
+  const gained = await pointsBanner();
 
   const draw = async () => {
     const until = new Date(Date.now() + days * 86400000).toISOString();
     let q = sb.from("match_list").select("*").eq("status", "scheduled")
       .gt("kickoff", new Date().toISOString()).lte("kickoff", until)
       .order("kickoff").order("id").limit(300);
-    q = applyFilter(q, f);
+    q = group ? groupFilter(q, group) : applyFilter(q, f);
     const { data: matches, error } = await q;
     if (error) throw error;
     const tips = await myTipsFor(matches.map((m) => m.id));
-    const open = matches.filter((m) => !tips.has(m.id)).length;
+    const done = matches.filter((m) => tips.has(m.id)).length;
+    const pct = matches.length ? Math.round(done / matches.length * 100) : 0;
 
     let lastDay = "";
     const items = matches.map((m) => {
@@ -339,9 +650,10 @@ async function renderSpiele() {
       const dk = dayKey(m.kickoff);
       const head = dk !== lastDay ? `<div class="day">${esc(fmtDay(m.kickoff))}</div>` : "";
       lastDay = dk;
+      const mine = group?.team_id && (m.home_team_id === group.team_id || m.away_team_id === group.team_id);
       return head + html`
-        <div class="match" data-id="${m.id}">
-          <div class="meta"><span class="league">${leagueLabel(m)}</span><span>${fmtTime(m.kickoff)}</span></div>
+        <div class="match ${t ? "tipped" : ""} ${mine ? "mine" : ""}" data-id="${m.id}">
+          <div class="meta"><span class="league">${group && !m.is_cup ? (mine ? "⭐ Spiel deines Teams" : esc(m.league_name ?? "")) : leagueLabel(m)}</span><span>${fmtTime(m.kickoff)}</span></div>
           <div class="line">
             <div class="teams">
               <div class="team">${esc(m.home_name)}</div>
@@ -352,26 +664,47 @@ async function renderSpiele() {
               <input class="score-in" data-side="a" type="number" inputmode="numeric" min="0" max="30" aria-label="Tore ${esc(m.away_name)}" value="${t ? t.away_goals : ""}">
             </div>
           </div>
-          <div class="foot"><span class="status">${t ? '<span class="saved">✓ getippt</span>' : '<span class="muted">noch nicht getippt</span>'}</span>${m.is_cup ? '<span class="cup small">doppelte Punkte</span>' : ""}</div>
+          <div class="foot"><span class="status">${t ? '<span class="saved">✓ getippt</span>' : '<span class="muted">noch nicht getippt</span>'}</span>${m.is_cup ? '<span class="cup small">2× Punkte</span>' : ""}</div>
         </div>`;
     }).join("");
 
+    const chips = html`
+      <div class="chips">
+        ${groups.map((g) => `<a class="chip ${g.id === active ? "on" : ""}" href="#/spiele/${g.id}">${esc(g.team_label || g.name)}</a>`).join("")}
+        <a class="chip ${active === "alle" ? "on" : ""}" href="#/spiele/alle">Alle Spiele</a>
+        <a class="chip add" href="#/neu">＋ Tipprunde</a>
+      </div>`;
+
     setView(html`
-      <h1>Tippen</h1>
-      ${filterControls(f)}
-      <p class="muted small">${matches.length} Spiele in den nächsten ${days} Tagen${matches.length ? ` · ${open} noch offen` : ""}. Tipps sind bis zum Anpfiff änderbar.</p>
-      ${items || `<div class="empty">Keine Spiele in diesem Zeitraum.</div>`}
+      ${gained ? `<div class="gain pop">🎉 <b>+${gained.gained} Punkte</b> seit deinem letzten Besuch!<br><span class="small">Total ${gained.total} Punkte. <a href="#/resultate">Ansehen ›</a></span></div>` : ""}
+      ${chips}
+      ${group ? `<h1 class="h-group">${esc(group.name)}</h1><p class="muted small" style="margin-top:-6px">${esc(group.source_name ?? "")} · ${esc(group.league_name ?? "")}</p>` : `<h1>Alle Spiele</h1>${filterControls(f)}`}
+      ${matches.length ? html`
+        <div class="progress-wrap">
+          <div class="progress-label"><span id="plabel">${done === matches.length ? "🔥 Alles getippt!" : `${done} von ${matches.length} getippt`}</span><span class="muted small">nächste ${days} Tage</span></div>
+          <div class="progress"><div class="bar" id="pbar" style="width:${pct}%"></div></div>
+        </div>` : ""}
+      ${items || `<div class="empty">Keine Spiele in den nächsten ${days} Tagen.${group ? " Die nächste Runde kommt bestimmt!" : ""}</div>`}
       ${days < 120 ? `<button class="btn block" id="more">Weitere Spiele laden</button>` : ""}
     `);
-    bindFilters(f, draw);
+    if (!group) bindFilters(f, draw);
     $view.querySelector("#more")?.addEventListener("click", () => { days = days < 14 ? 14 : days < 30 ? 30 : 120; draw(); });
-    bindTipInputs();
+    bindTipInputs(() => {
+      const total = $view.querySelectorAll(".match[data-id]").length;
+      const n = $view.querySelectorAll(".match.tipped").length;
+      const bar = $view.querySelector("#pbar"), lab = $view.querySelector("#plabel");
+      if (bar) bar.style.width = `${Math.round(n / total * 100)}%`;
+      if (lab) lab.textContent = n === total ? "🔥 Alles getippt!" : `${n} von ${total} getippt`;
+      if (n === total && total > 0 && !draw.celebrated) { draw.celebrated = true; confetti(80); vibrate([15, 30, 15]); }
+    });
   };
   await draw();
+  if (gained) { confetti(100); vibrate([20, 40, 20]); }
 }
 
-function bindTipInputs() {
-  for (const card of $view.querySelectorAll(".match[data-id]")) {
+function bindTipInputs(onChange = () => {}) {
+  const cards = [...$view.querySelectorAll(".match[data-id]")];
+  cards.forEach((card, idx) => {
     const inputs = card.querySelectorAll(".score-in");
     const status = card.querySelector(".status");
     let timer;
@@ -383,15 +716,20 @@ function bindTipInputs() {
           const { error } = await sb.rpc("delete_tip", { p_match_id: id });
           if (error) throw error;
           status.innerHTML = '<span class="muted">Tipp gelöscht</span>';
+          card.classList.remove("tipped");
         } else if (h !== "" && a !== "") {
           const hn = parseInt(h, 10), an = parseInt(a, 10);
           if (!(hn >= 0 && hn <= 30 && an >= 0 && an <= 30)) throw new Error("Bitte Zahlen von 0 bis 30 eingeben");
           const { error } = await sb.rpc("save_tip", { p_match_id: id, p_home: hn, p_away: an });
           if (error) throw error;
-          status.innerHTML = `<span class="saved">✓ gespeichert (${hn}:${an})</span>`;
+          status.innerHTML = `<span class="saved pop">✓ gespeichert (${hn}:${an})</span>`;
+          card.classList.add("tipped");
+          card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+          vibrate();
         } else {
           status.innerHTML = '<span class="muted">beide Werte eingeben …</span>';
         }
+        onChange();
       } catch (e) {
         status.innerHTML = `<span class="err">${esc(errMsg(e))}</span>`;
       }
@@ -400,13 +738,18 @@ function bindTipInputs() {
       inp.addEventListener("input", () => {
         if (inp.value.length > 2) inp.value = inp.value.slice(0, 2);
         clearTimeout(timer);
-        timer = setTimeout(save, 700);
-        // nach Eingabe der Heimtore direkt zu den Gasttoren springen
-        if (inp.dataset.side === "h" && inp.value !== "") inputs[1].focus();
+        timer = setTimeout(save, 600);
+        if (inp.value === "") return;
+        // Heimtore -> Gasttore -> nächstes Spiel: schnell durchtippen
+        if (inp.dataset.side === "h") inputs[1].focus();
+        else {
+          const next = cards.slice(idx + 1).find((c) => c.querySelector(".score-in").value === "");
+          if (next) { next.querySelector(".score-in").focus(); next.scrollIntoView({ behavior: "smooth", block: "center" }); }
+        }
       });
       inp.addEventListener("focus", () => inp.select());
     }
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -525,14 +868,9 @@ async function renderSpielDetail(id) {
 // Ranglisten
 // ---------------------------------------------------------------------------
 
-async function myGroups() {
-  const { data, error } = await sb.from("groups").select("id,name,invite_code,owner_id").order("name");
-  if (error) throw error;
-  return data;
-}
 
 async function renderRangliste(sel = "gesamt") {
-  const groups = await myGroups();
+  const groups = await loadGroups(true);
   const chips = html`
     <div class="chips">
       <a class="chip ${sel === "gesamt" ? "on" : ""}" href="#/rangliste/gesamt" style="display:flex;align-items:center;text-decoration:none">Gesamt</a>
@@ -578,74 +916,57 @@ async function renderRangliste(sel = "gesamt") {
 // ---------------------------------------------------------------------------
 
 async function renderGruppen() {
-  const groups = await myGroups();
+  const groups = await loadGroups(true);
   setView(html`
-    <h1>Gruppen</h1>
-    <p class="muted">Tippe mit Freunden, Familie oder deinem Team in einer eigenen Gruppe.</p>
-    <div class="list">
-      ${groups.map((g) => `<a class="item" href="#/gruppe/${g.id}"><span>👥 ${esc(g.name)}</span><span class="muted">›</span></a>`).join("") || `<div class="empty">Du bist noch in keiner Gruppe.</div>`}
+    <h1>Tipprunden</h1>
+    ${groups.length ? "" : `<div class="hero small-hero"><div class="hero-emoji bounce">👥</div>
+      <p class="hero-sub">Allein tippen ist gut, gegen Freunde tippen ist besser.</p></div>`}
+    <div class="cta-grid">
+      <a class="cta" href="#/neu"><span class="cta-emoji">✨</span><b>Neue Tipprunde</b><span class="small">Team wählen & Freunde einladen</span></a>
+      <a class="cta alt" href="#/beitreten"><span class="cta-emoji">🔑</span><b>Code eingeben</b><span class="small">Einer Runde beitreten</span></a>
     </div>
-    <h2>Gruppe beitreten</h2>
-    <form id="join" class="card row">
-      <input class="grow" type="text" name="code" placeholder="Einladungscode" maxlength="8" required autocapitalize="characters" style="text-transform:uppercase">
-      <button class="btn primary">Beitreten</button>
-    </form>
-    <h2>Neue Gruppe erstellen</h2>
-    <form id="create" class="card row">
-      <input class="grow" type="text" name="name" placeholder="Name der Gruppe" minlength="2" maxlength="40" required>
-      <button class="btn primary">Erstellen</button>
-    </form>
+    ${groups.length ? `<h2>Deine Tipprunden</h2>` : ""}
+    <div class="list">
+      ${groups.map((g) => html`
+        <a class="item group-item" href="#/gruppe/${g.id}">
+          <span><b>${esc(g.name)}</b><br><span class="muted small">${g.team_label ? `⚽ ${esc(g.team_label)} · ` : ""}${g.members} ${g.members === 1 ? "Mitglied" : "Mitglieder"}</span></span>
+          <span class="muted">›</span>
+        </a>`).join("")}
+    </div>
   `);
-  $view.querySelector("#join").onsubmit = async (e) => {
-    e.preventDefault();
-    const { data, error } = await sb.rpc("join_group", { p_code: new FormData(e.target).get("code") });
-    if (error) return toast(errMsg(error), true);
-    toast(`Willkommen in „${data.name}“!`);
-    location.hash = `#/gruppe/${data.id}`;
-  };
-  $view.querySelector("#create").onsubmit = async (e) => {
-    e.preventDefault();
-    const { data, error } = await sb.rpc("create_group", { p_name: new FormData(e.target).get("name") });
-    if (error) return toast(errMsg(error), true);
-    toast("Gruppe erstellt.");
-    location.hash = `#/gruppe/${data.id}`;
-  };
 }
 
 async function renderGruppe(id) {
-  const { data: g, error } = await sb.from("groups").select("*").eq("id", id).maybeSingle();
+  const groups = await loadGroups(true);
+  const g = groups.find((x) => x.id === id);
+  if (!g) return setView(`<p><a href="#/gruppen">‹ Tipprunden</a></p><div class="empty">Tipprunde nicht gefunden.</div>`);
+  const { data: board, error } = await sb.rpc("leaderboard", { p_group_id: id });
   if (error) throw error;
-  if (!g) return setView(`<p><a href="#/gruppen">‹ Gruppen</a></p><div class="empty">Gruppe nicht gefunden.</div>`);
-  const { data: board, error: e2 } = await sb.rpc("leaderboard", { p_group_id: id });
-  if (e2) throw e2;
   const link = `${appUrl()}?join=${g.invite_code}`;
   const me = state.session.user.id;
+  const medal = (r) => (r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "🥉" : r);
   setView(html`
-    <p><a href="#/gruppen">‹ Gruppen</a></p>
-    <h1>${esc(g.name)}</h1>
-    <div class="card">
-      <div class="muted small">Einladungscode</div>
-      <div class="row"><span class="code grow">${esc(g.invite_code)}</span>
-        <button class="btn small" id="share">Einladen</button></div>
-      <p class="muted small">Teile den Link oder den Code. Wer ihn hat, kann beitreten.</p>
-    </div>
-    <h2>Rangliste (${board.length})</h2>
+    <p><a href="#/gruppen">‹ Tipprunden</a></p>
+    <h1 style="margin-bottom:2px">${esc(g.name)}</h1>
+    ${g.team_label ? `<p class="muted" style="margin-top:0">⚽ ${esc(g.team_label)} · ${esc(g.source_name ?? "")} ${esc(g.league_name ?? "")}</p>` : ""}
+    <a class="btn primary block big" href="#/spiele/${g.id}">📝 Spiele tippen</a>
+    <h2>Rangliste</h2>
     <div class="card"><table class="tbl">
-      <tr><th>#</th><th class="l">Spieler</th><th>🎯</th><th>Punkte</th></tr>
-      ${board.map((r) => `<tr class="${r.user_id === me ? "me" : ""}"><td>${r.rank}</td><td class="name">${esc(r.username)}</td><td>${r.exact_count}</td><td><b>${r.points}</b></td></tr>`).join("")}
+      <tr><th>#</th><th class="l">Spieler</th><th title="genaue Resultate">🎯</th><th>Punkte</th></tr>
+      ${board.map((r) => `<tr class="${r.user_id === me ? "me" : ""}"><td>${medal(r.rank)}</td><td class="name">${esc(r.username)}</td><td>${r.exact_count}</td><td><b>${r.points}</b></td></tr>`).join("")}
     </table></div>
+    ${board.length < 3 ? `<p class="muted small center">Zu zweit ist's ein Duell, ab drei wird's eine Liga. Lade mehr Leute ein!</p>` : ""}
+    <div class="card center">
+      <div class="muted small">Einladungscode</div>
+      <div class="code" style="margin:6px 0">${esc(g.invite_code)}</div>
+      <button class="btn primary block" id="share">📲 Freunde einladen</button>
+    </div>
     ${g.owner_id === me ? `
     <h2>Umbenennen</h2>
     <form id="rename" class="card row"><input class="grow" type="text" name="name" value="${esc(g.name)}" minlength="2" maxlength="40" required><button class="btn">Speichern</button></form>` : ""}
-    <p style="margin-top:24px"><button class="btn danger block" id="leave">Gruppe verlassen</button></p>
+    <p style="margin-top:24px"><button class="btn danger block" id="leave">Tipprunde verlassen</button></p>
   `);
-  $view.querySelector("#share").onclick = async () => {
-    const text = `Tippe mit mir im RegioTipp, Gruppe „${g.name}“: ${link}`;
-    try {
-      if (navigator.share) await navigator.share({ title: "RegioTipp", text, url: link });
-      else { await navigator.clipboard.writeText(text); toast("Einladung kopiert."); }
-    } catch { /* abgebrochen */ }
-  };
+  $view.querySelector("#share").onclick = () => shareInvite(g, link);
   $view.querySelector("#rename")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const { error: er } = await sb.from("groups").update({ name: new FormData(e.target).get("name") }).eq("id", id);
@@ -653,12 +974,15 @@ async function renderGruppe(id) {
     toast("Gespeichert."); route();
   });
   $view.querySelector("#leave").onclick = async () => {
-    if (!confirm(`Gruppe „${g.name}“ wirklich verlassen?`)) return;
+    if (!confirm(`Tipprunde „${g.name}“ wirklich verlassen?`)) return;
     const { error: er } = await sb.rpc("leave_group", { p_group_id: id });
     if (er) return toast(errMsg(er), true);
-    toast("Gruppe verlassen."); location.hash = "#/gruppen";
+    state.groups = null;
+    toast("Tipprunde verlassen."); location.hash = "#/gruppen";
   };
 }
+
+
 
 // ---------------------------------------------------------------------------
 // Tabellen
