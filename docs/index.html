@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b6e4f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="RegioTipp">
+  <title>RegioTipp</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">⚽ RegioTipp</div>
+    <div id="topbar-right" class="topbar-right"></div>
+  </header>
+
+  <main id="view" class="view" aria-live="polite">
+    <div class="loading">Laden …</div>
+  </main>
+
+  <nav id="tabbar" class="tabbar" hidden>
+    <a href="#/spiele" data-tab="spiele"><span class="ti">📝</span>Tippen</a>
+    <a href="#/resultate" data-tab="resultate"><span class="ti">✅</span>Resultate</a>
+    <a href="#/rangliste" data-tab="rangliste"><span class="ti">🏆</span>Rangliste</a>
+    <a href="#/gruppen" data-tab="gruppen"><span class="ti">👥</span>Gruppen</a>
+    <a href="#/mehr" data-tab="mehr"><span class="ti">☰</span>Mehr</a>
+  </nav>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
