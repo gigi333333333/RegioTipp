@@ -99,8 +99,7 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- Tipprunde erstellen (mit Mannschaft)
-drop function if exists public.create_group(text);
-create or replace function public.create_group(p_name text, p_team_id bigint default null)
+create or replace function public.create_group(p_name text, p_team_id bigint)
 returns public.groups language plpgsql security definer set search_path = public as $$
 declare
   g      public.groups;
@@ -120,41 +119,6 @@ begin
   insert into public.group_members (group_id, user_id) values (g.id, auth.uid());
   return g;
 end $$;
-
--- Rangliste: innerhalb einer Tipprunde zählen nur die Spiele dieser Tipprunde
-create or replace function public.leaderboard(p_group_id uuid default null)
-returns table (rank bigint, user_id uuid, username text, points bigint, tips_count bigint,
-               exact_count bigint, tendency_count bigint)
-language sql stable security definer set search_path = public as $$
-  with grp as (
-    select g.team_id, public.group_league_ids(g.id) league_ids
-      from public.groups g where g.id = p_group_id
-  ), members as (
-    select p.id, p.username from public.profiles p
-     where p_group_id is null
-        or (public.is_group_member(p_group_id)
-            and exists (select 1 from public.group_members gm
-                         where gm.group_id = p_group_id and gm.user_id = p.id))
-  ), scored as (
-    select t.user_id, t.points, mt.home_goals, mt.away_goals, t.home_goals th, t.away_goals ta
-      from public.tips t
-      join public.matches mt on mt.id = t.match_id and mt.status = 'finished'
-     where p_group_id is null
-        or exists (select 1 from grp where public.match_in_group(mt, grp.team_id, grp.league_ids))
-  ), stats as (
-    select m.id, m.username,
-           coalesce(sum(s.points), 0) points,
-           count(s.user_id) tips_count,
-           count(s.user_id) filter (where s.home_goals = s.th and s.away_goals = s.ta) exact_count,
-           count(s.user_id) filter (where sign(s.home_goals - s.away_goals) = sign(s.th - s.ta)) tendency_count
-      from members m left join scored s on s.user_id = m.id
-     group by m.id, m.username
-  )
-  select rank() over (order by points desc, exact_count desc), id, username, points, tips_count,
-         exact_count, tendency_count
-    from stats
-   order by 1, username;
-$$;
 
 -- Gruppen-Vergleich: Durchschnitt der Punkte in der eigenen Tipprunde
 create or replace function public.group_ranking()
@@ -180,12 +144,11 @@ $$;
 -- Rechte
 revoke execute on function public.team_label(text, text), public.search_teams(text),
   public.group_league_ids(uuid), public.match_in_group(public.matches, bigint, bigint[]),
-  public.my_groups(), public.group_preview(text), public.create_group(text, bigint),
-  public.leaderboard(uuid), public.group_ranking()
+  public.my_groups(), public.group_preview(text), public.create_group(text, bigint), public.group_ranking()
   from public, anon;
 grant execute on function public.team_label(text, text), public.search_teams(text),
   public.group_preview(text), public.match_in_group(public.matches, bigint, bigint[])
   to anon, authenticated;
 grant execute on function public.group_league_ids(uuid), public.my_groups(),
-  public.create_group(text, bigint), public.leaderboard(uuid), public.group_ranking()
+  public.create_group(text, bigint), public.group_ranking()
   to authenticated;

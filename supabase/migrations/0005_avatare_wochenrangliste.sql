@@ -74,7 +74,6 @@ begin
 end $$;
 revoke execute on function private.set_profile_team() from public, anon, authenticated;
 
-drop trigger if exists group_members_profile_team on public.group_members;
 create trigger group_members_profile_team after insert on public.group_members
   for each row execute function private.set_profile_team();
 
@@ -112,8 +111,7 @@ select p.id, p.username, p.is_admin, p.team_id, p.avatar_url,
 -- ---------------------------------------------------------------------------
 -- Rangliste mit Zeitraum: 'all' (Gesamt) oder 'week' (aktuelle Woche, Mo–So, Schweizer Zeit)
 -- ---------------------------------------------------------------------------
-drop function if exists public.leaderboard(uuid);
-create or replace function public.leaderboard(p_group_id uuid default null, p_period text default 'all')
+create or replace function public.leaderboard(p_group_id uuid, p_period text)
 returns table (rank bigint, user_id uuid, username text, picture text, team_name text, points bigint,
                tips_count bigint, exact_count bigint, tendency_count bigint)
 language sql stable security definer set search_path = public as $$
@@ -169,9 +167,6 @@ values ('avatars', 'avatars', true, 1048576, array['image/jpeg', 'image/png', 'i
 on conflict (id) do update set public = true, file_size_limit = 1048576,
   allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp'];
 
-drop policy if exists "Avatar hochladen" on storage.objects;
-drop policy if exists "Avatar ändern" on storage.objects;
-drop policy if exists "Avatar löschen" on storage.objects;
 
 create policy "Avatar hochladen" on storage.objects for insert to authenticated
   with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
@@ -181,6 +176,5 @@ create policy "Avatar ändern" on storage.objects for update to authenticated
 create policy "Avatar löschen" on storage.objects for delete to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
 -- (Überschreiben mit upsert braucht auch Leserechte auf die eigenen Dateien)
-drop policy if exists "Avatar lesen" on storage.objects;
 create policy "Avatar lesen" on storage.objects for select to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);

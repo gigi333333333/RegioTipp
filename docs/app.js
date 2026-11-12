@@ -984,7 +984,7 @@ async function renderGruppe(id) {
   const groups = await loadGroups(true);
   const g = groups.find((x) => x.id === id);
   if (!g) return setView(`<p><a href="#/gruppen">‹ Tipprunden</a></p><div class="empty">Tipprunde nicht gefunden.</div>`);
-  const { data: board, error } = await sb.rpc("leaderboard", { p_group_id: id });
+  const { data: board, error } = await sb.rpc("leaderboard", { p_group_id: id, p_period: "all" });
   if (error) throw error;
   const link = `${appUrl()}?join=${g.invite_code}`;
   const me = state.session.user.id;
