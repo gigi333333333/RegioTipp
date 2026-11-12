@@ -659,21 +659,7 @@ async function renderSpiele(groupArg) {
       const head = dk !== lastDay ? `<div class="day">${esc(fmtDay(m.kickoff))}</div>` : "";
       lastDay = dk;
       const mine = group?.team_id && (m.home_team_id === group.team_id || m.away_team_id === group.team_id);
-      return head + html`
-        <div class="match ${t ? "tipped" : ""} ${mine ? "mine" : ""}" data-id="${m.id}">
-          <div class="meta"><span class="league">${group && !m.is_cup ? (mine ? "⭐ Spiel deines Teams" : esc(m.league_name ?? "")) : leagueLabel(m)}</span><span>${fmtTime(m.kickoff)}</span></div>
-          <div class="line">
-            <div class="teams">
-              <div class="team">${esc(m.home_name)}</div>
-              <div class="team">${esc(m.away_name)}</div>
-            </div>
-            <div class="scores">
-              <input class="score-in" data-side="h" type="number" inputmode="numeric" min="0" max="30" aria-label="Tore ${esc(m.home_name)}" value="${t ? t.home_goals : ""}">
-              <input class="score-in" data-side="a" type="number" inputmode="numeric" min="0" max="30" aria-label="Tore ${esc(m.away_name)}" value="${t ? t.away_goals : ""}">
-            </div>
-          </div>
-          <div class="foot"><span class="status">${t ? '<span class="saved">✓ getippt</span>' : '<span class="muted">noch nicht getippt</span>'}</span>${m.is_cup ? '<span class="cup small">2× Punkte</span>' : ""}</div>
-        </div>`;
+      void head; return tipCard(m, t, { mine, label: group && !m.is_cup ? (mine ? "⭐ Spiel deines Teams" : esc(m.league_name ?? "")) : leagueLabel(m) });
     }).join("");
 
     const chips = html`
@@ -710,54 +696,103 @@ async function renderSpiele(groupArg) {
   if (gained) { confetti(100); vibrate([20, 40, 20]); }
 }
 
+// Vereinswappen (oder Initiale, falls keins vorhanden)
+function crest(url, name, size = 64) {
+  const initial = esc((String(name || "?").replace(/^(FC|SC|FC\.|SV|SC|US|AC|BC)\s+/i, "").trim()[0] || "?").toUpperCase());
+  return `<span class="crest-big" style="--s:${size}px" data-i="${initial}">${url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ""}</span>`;
+}
+
+const chevUp = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 15l7-7 7 7" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const chevDown = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+// Tipp-Karte: Wappen links/rechts, in der Mitte zwei Zähler mit Pfeilen
+function tipCard(m, t, { mine = false, label = "" } = {}) {
+  const set = !!t;
+  const stepper = (side, val, team) => html`
+    <div class="stepper" data-side="${side}">
+      <button type="button" class="st-up" aria-label="Tor mehr für ${esc(team)}">${chevUp}</button>
+      <div class="st-num ${set ? "" : "unset"}" aria-live="polite">${set ? val : 0}</div>
+      <button type="button" class="st-down" aria-label="Tor weniger für ${esc(team)}" ${!set || val === 0 ? "disabled" : ""}>${chevDown}</button>
+    </div>`;
+  return html`
+    <div class="match tipcard ${set ? "tipped" : ""} ${mine ? "mine" : ""}" data-id="${m.id}"
+         data-h="${set ? t.home_goals : ""}" data-a="${set ? t.away_goals : ""}">
+      <div class="tc-date">${esc(fmtDay(m.kickoff))}, ${fmtTime(m.kickoff)} Uhr</div>
+      <div class="tc-league">${label}</div>
+      <div class="duel">
+        <div class="side">${crest(m.home_logo, m.home_name)}<div class="tname">${esc(m.home_name)}</div></div>
+        ${stepper("h", t?.home_goals ?? 0, m.home_name)}
+        <div class="colon">:</div>
+        ${stepper("a", t?.away_goals ?? 0, m.away_name)}
+        <div class="side">${crest(m.away_logo, m.away_name)}<div class="tname">${esc(m.away_name)}</div></div>
+      </div>
+      <div class="foot">
+        <span class="status">${set ? '<span class="saved">✓ getippt</span>' : '<span class="muted">Tippe auf die Pfeile</span>'}</span>
+        <span>${m.is_cup ? '<span class="cup small">2× Punkte</span> ' : ""}<button type="button" class="linkbtn clear" ${set ? "" : "hidden"}>Tipp löschen</button></span>
+      </div>
+    </div>`;
+}
+
 function bindTipInputs(onChange = () => {}) {
-  const cards = [...$view.querySelectorAll(".match[data-id]")];
-  cards.forEach((card, idx) => {
-    const inputs = card.querySelectorAll(".score-in");
+  for (const card of $view.querySelectorAll(".tipcard[data-id]")) {
+    const id = Number(card.dataset.id);
     const status = card.querySelector(".status");
+    const clearBtn = card.querySelector(".clear");
+    const nums = { h: card.querySelector('[data-side="h"] .st-num'), a: card.querySelector('[data-side="a"] .st-num') };
+    const downs = { h: card.querySelector('[data-side="h"] .st-down'), a: card.querySelector('[data-side="a"] .st-down') };
     let timer;
+
+    const val = (s) => (card.dataset[s] === "" ? null : Number(card.dataset[s]));
+    const paint = () => {
+      for (const s of ["h", "a"]) {
+        const v = val(s);
+        nums[s].textContent = v ?? 0;
+        nums[s].classList.toggle("unset", v === null);
+        downs[s].disabled = v === null || v === 0;
+      }
+    };
     const save = async () => {
-      const h = inputs[0].value.trim(), a = inputs[1].value.trim();
-      const id = Number(card.dataset.id);
+      const h = val("h"), a = val("a");
       try {
-        if (h === "" && a === "") {
+        if (h === null) {
           const { error } = await sb.rpc("delete_tip", { p_match_id: id });
           if (error) throw error;
           status.innerHTML = '<span class="muted">Tipp gelöscht</span>';
-          card.classList.remove("tipped");
-        } else if (h !== "" && a !== "") {
-          const hn = parseInt(h, 10), an = parseInt(a, 10);
-          if (!(hn >= 0 && hn <= 30 && an >= 0 && an <= 30)) throw new Error("Bitte Zahlen von 0 bis 30 eingeben");
-          const { error } = await sb.rpc("save_tip", { p_match_id: id, p_home: hn, p_away: an });
-          if (error) throw error;
-          status.innerHTML = `<span class="saved pop">✓ gespeichert (${hn}:${an})</span>`;
-          card.classList.add("tipped");
-          card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
-          vibrate();
+          card.classList.remove("tipped"); clearBtn.hidden = true;
         } else {
-          status.innerHTML = '<span class="muted">beide Werte eingeben …</span>';
+          const { error } = await sb.rpc("save_tip", { p_match_id: id, p_home: h, p_away: a });
+          if (error) throw error;
+          status.innerHTML = `<span class="saved pop">✓ gespeichert (${h}:${a})</span>`;
+          card.classList.add("tipped"); clearBtn.hidden = false;
+          card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
         }
         onChange();
       } catch (e) {
         status.innerHTML = `<span class="err">${esc(errMsg(e))}</span>`;
       }
     };
-    for (const inp of inputs) {
-      inp.addEventListener("input", () => {
-        if (inp.value.length > 2) inp.value = inp.value.slice(0, 2);
-        clearTimeout(timer);
-        timer = setTimeout(save, 600);
-        if (inp.value === "") return;
-        // Heimtore -> Gasttore -> nächstes Spiel: schnell durchtippen
-        if (inp.dataset.side === "h") inputs[1].focus();
-        else {
-          const next = cards.slice(idx + 1).find((c) => c.querySelector(".score-in").value === "");
-          if (next) { next.querySelector(".score-in").focus(); next.scrollIntoView({ behavior: "smooth", block: "center" }); }
-        }
-      });
-      inp.addEventListener("focus", () => inp.select());
+    const change = (side, delta) => {
+      // erster Klick: beide Seiten starten bei 0
+      if (val("h") === null) { card.dataset.h = "0"; card.dataset.a = "0"; }
+      const next = Math.max(0, Math.min(20, val(side) + delta));
+      card.dataset[side] = String(next);
+      paint(); vibrate(8);
+      nums[side].classList.remove("bump"); void nums[side].offsetWidth; nums[side].classList.add("bump");
+      status.innerHTML = '<span class="muted">…</span>';
+      clearTimeout(timer);
+      timer = setTimeout(save, 650);
+    };
+    for (const s of ["h", "a"]) {
+      card.querySelector(`[data-side="${s}"] .st-up`).onclick = () => change(s, +1);
+      downs[s].onclick = () => change(s, -1);
+      // Tippen auf die Zahl setzt einen 0:0-Tipp, wenn noch keiner da ist
+      nums[s].onclick = () => { if (val("h") === null) change(s, 0); };
     }
-  });
+    clearBtn.onclick = () => {
+      card.dataset.h = ""; card.dataset.a = "";
+      paint(); clearTimeout(timer); save();
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
