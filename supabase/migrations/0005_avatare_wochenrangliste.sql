@@ -8,56 +8,24 @@ alter table public.profiles add column if not exists avatar_url text;
 alter table public.profiles add column if not exists team_id bigint references public.teams(id) on delete set null;
 
 -- ---------------------------------------------------------------------------
--- Wappen beim Liga-Import speichern (Feld "logo" in den Tabellenzeilen)
+-- Wappen beim Liga-Import speichern (die Edge Function ruft das nach fs_sync_league auf)
 -- ---------------------------------------------------------------------------
-create or replace function public.fs_sync_league(p_slug text, p_season text, p_groups jsonb)
+create or replace function public.fs_set_team_logos(p_logos jsonb)
 returns integer language plpgsql security definer set search_path = public as $$
-declare
-  g       jsonb;
-  s       jsonb;
-  v_lid   bigint;
-  v_tid   bigint;
-  v_tids  bigint[];
-  v_seen  text[] := '{}';
-  n       integer := 0;
+declare n integer;
 begin
-  for g in select * from jsonb_array_elements(p_groups) loop
-    insert into public.leagues (source_slug, fs_group_id, name, season, active, updated_at)
-    values (p_slug, g->>'fs_group_id', g->>'name', p_season, true, now())
-    on conflict (fs_group_id) do update
-       set name = excluded.name, season = coalesce(excluded.season, public.leagues.season),
-           active = true, updated_at = now()
-    returning id into v_lid;
-    v_seen := v_seen || (g->>'fs_group_id');
-    v_tids := '{}';
-
-    for s in select * from jsonb_array_elements(g->'standings') loop
-      v_tid := private.upsert_team(s->>'fs_team_id', s->>'team_name');
-      v_tids := v_tids || v_tid;
-      if nullif(s->>'logo', '') is not null then
-        update public.teams set logo_url = s->>'logo'
-         where id = v_tid and logo_url is distinct from s->>'logo';
-      end if;
-      insert into public.league_standings
-        (league_id, team_id, rank, played, won, drawn, lost, goals_for, goals_against, points, updated_at)
-      values (v_lid, v_tid, (s->>'rank')::int, (s->>'played')::int, (s->>'won')::int, (s->>'drawn')::int,
-              (s->>'lost')::int, (s->>'gf')::int, (s->>'ga')::int, (s->>'points')::int, now())
-      on conflict (league_id, team_id) do update
-         set rank = excluded.rank, played = excluded.played, won = excluded.won, drawn = excluded.drawn,
-             lost = excluded.lost, goals_for = excluded.goals_for, goals_against = excluded.goals_against,
-             points = excluded.points, updated_at = now();
-    end loop;
-    delete from public.league_standings where league_id = v_lid and not (team_id = any (v_tids));
-    n := n + 1;
-  end loop;
-
-  if n > 0 then
-    update public.leagues set active = false
-     where source_slug = p_slug and active and not (fs_group_id = any (v_seen));
-  end if;
-  update public.source_leagues set last_synced_at = now() where slug = p_slug;
+  update public.teams t
+     set logo_url = x->>'logo'
+    from jsonb_array_elements(p_logos) x
+   where t.fs_team_id = x->>'fs_team_id'
+     and nullif(x->>'logo', '') is not null
+     and x->>'logo' ~ '^https://[a-z0-9.-]+\.amazonaws\.com/'
+     and t.logo_url is distinct from x->>'logo';
+  get diagnostics n = row_count;
   return n;
 end $$;
+revoke execute on function public.fs_set_team_logos(jsonb) from public, anon, authenticated;
+grant execute on function public.fs_set_team_logos(jsonb) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- Verein des Profils: wird beim ersten Beitritt zu einer Tipprunde gesetzt
@@ -173,7 +141,7 @@ create policy "Avatar hochladen" on storage.objects for insert to authenticated
 create policy "Avatar ändern" on storage.objects for update to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text)
   with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
-create policy "Avatar löschen" on storage.objects for delete to authenticated
+create policy "Avatar entfernen" on storage.objects for delete to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
 -- (Überschreiben mit upsert braucht auch Leserechte auf die eigenen Dateien)
 create policy "Avatar lesen" on storage.objects for select to authenticated

@@ -204,6 +204,12 @@ async function syncLeagues() {
         p_slug: slug, p_season: season, p_groups: groups,
       });
       if (error) throw error;
+      // Vereinswappen separat speichern
+      const logos = groups.flatMap((g) => g.standings.filter((s) => s.logo).map((s) => ({ fs_team_id: s.fs_team_id, logo: s.logo })));
+      if (logos.length) {
+        const { error: le } = await db.rpc("fs_set_team_logos", { p_logos: logos });
+        if (le) throw le;
+      }
       return { slug, ok: true, groups: data, teams: groups.reduce((s, g) => s + g.standings.length, 0) };
     } catch (e) {
       return { slug, ok: false, error: String(e) };
