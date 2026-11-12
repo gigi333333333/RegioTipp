@@ -1150,13 +1150,13 @@ function renderProfil() {
       <p class="muted" style="margin:0">${p.team_name ? `⚽ ${esc(p.team_name)}` : "Noch kein Verein gewählt"}</p>
       <div class="row" style="justify-content:center;margin-top:10px">
         <button class="btn small" id="pick">📷 Foto wählen</button>
-        ${hasPhoto && p.team_logo ? `<button class="btn small" id="crest">🛡️ Vereinswappen verwenden</button>` : ""}
+        ${hasPhoto && p.team_logo ? `<button class="btn small" id="crest">🛡️ Vereinsabzeichen verwenden</button>` : ""}
         ${hasPhoto && !p.team_logo ? `<button class="btn small" id="crest">Foto entfernen</button>` : ""}
       </div>
     </div>
 
     <h2>Mein Verein</h2>
-    <p class="muted small">Das Wappen deines Vereins ist dein Profilbild, solange du kein eigenes Foto hast.</p>
+    <p class="muted small">Das Abzeichen deines Vereins ist dein Profilbild, solange du kein eigenes Foto hast.</p>
     <input type="search" id="teamq" class="search-big" placeholder="🔍 Verein oder Mannschaft suchen" autocomplete="off">
     <div id="teamres" class="results"></div>
 
@@ -1197,7 +1197,7 @@ function renderProfil() {
     if (error) return toast(errMsg(error), true);
     await sb.storage.from("avatars").remove([`${state.session.user.id}/avatar.jpg`]);
     await loadProfile(); renderTop(); renderProfil();
-    toast(p.team_logo ? "Du zeigst jetzt dein Vereinswappen." : "Foto entfernt.");
+    toast(p.team_logo ? "Du zeigst jetzt dein Vereinsabzeichen." : "Foto entfernt.");
   });
 
   const q = $view.querySelector("#teamq"), res = $view.querySelector("#teamres");
