@@ -1277,6 +1277,15 @@ async function renderRangliste(sel = "alle") {
 
 async function renderGruppen() {
   const groups = await loadGroups(true);
+  const me = state.session.user.id;
+  // Abzeichen der Teams und eigene Platzierung pro Tipprunde
+  const teamIds = [...new Set(groups.map((g) => g.team_id).filter(Boolean))];
+  const [logos, ranks] = await Promise.all([
+    teamIds.length ? sb.from("teams").select("id,logo_url").in("id", teamIds) : { data: [] },
+    Promise.all(groups.map((g) => sb.rpc("leaderboard", { p_group_id: g.id, p_period: "all" }))),
+  ]);
+  const logoOf = new Map((logos.data ?? []).map((t) => [t.id, t.logo_url]));
+  const rankOf = new Map(groups.map((g, i) => [g.id, (ranks[i].data ?? []).find((r) => r.user_id === me)]));
   setView(html`
     <h1>Tipprunden</h1>
     ${groups.length ? "" : `<div class="hero small-hero"><div class="hero-emoji bounce">👥</div>
@@ -1288,9 +1297,15 @@ async function renderGruppen() {
     ${groups.length ? `<h2>Deine Tipprunden</h2>` : ""}
     <div class="list">
       ${groups.map((g) => html`
-        <a class="item group-item" href="#/gruppe/${g.id}">
-          <span><b>${esc(g.name)}</b><br><span class="muted small">${g.team_label ? `⚽ ${esc(g.team_label)} · ` : ""}${g.members} ${g.members === 1 ? "Mitglied" : "Mitglieder"}</span></span>
-          <span class="muted">›</span>
+        <a class="group-card" href="#/gruppe/${g.id}">
+          ${crest(logoOf.get(g.team_id), g.team_label || g.name, 56)}
+          <span class="gc-text">
+            <span class="gc-name">${esc(g.name)}</span>
+            <span class="gc-sub">${g.team_label ? `⚽ ${esc(g.team_label)}` : "Alle Spiele"}</span>
+            <span class="gc-sub">👥 ${g.members} ${g.members === 1 ? "Mitglied" : "Mitglieder"}</span>
+          </span>
+          <span class="gc-rank">${rankOf.get(g.id) ? `<b>${rankOf.get(g.id).rank}.</b><span>${rankOf.get(g.id).points} P</span>` : ""}</span>
+          <span class="gc-chev">›</span>
         </a>`).join("")}
     </div>
   `);
