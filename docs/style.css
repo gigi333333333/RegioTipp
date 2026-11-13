@@ -377,3 +377,8 @@ body.no-scroll { overflow: hidden; }
 .fm-teams .own { font-weight: 800; }
 .fm-res { min-width: 44px; text-align: center; border-radius: 8px; padding: 3px 6px; color: #fff; font-weight: 800; font-variant-numeric: tabular-nums; }
 .nowrap { white-space: nowrap; }
+
+/* Start-Knopf in der Mitte hervorheben */
+.tabbar a.tab-home .ti { width: 46px; height: 46px; margin-top: -18px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--brand); filter: none; opacity: 1; font-size: 22px; box-shadow: 0 3px 10px rgba(0,0,0,.18); border: 3px solid var(--card); }
+.tabbar a.tab-home.on .ti { background: linear-gradient(135deg, var(--brand), #2fa77a); }
