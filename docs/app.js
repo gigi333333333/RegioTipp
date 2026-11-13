@@ -655,6 +655,15 @@ function allGroupsFilter(q, groups) {
   return parts.length ? q.or(parts.join(",")) : q;
 }
 
+// Pfeil für die Veränderung der Platzierung seit dem letzten Spieltag
+function trendIcon(t) {
+  if (!t || t.rank_now == null || t.rank_before == null) return "";
+  const d = Number(t.rank_before) - Number(t.rank_now);
+  if (d > 0) return `<span class="trend up" title="${d} ${d === 1 ? "Platz" : "Plätze"} gestiegen">▲</span>`;
+  if (d < 0) return `<span class="trend down" title="${-d} ${d === -1 ? "Platz" : "Plätze"} gesunken">▼</span>`;
+  return `<span class="trend same" title="Platzierung unverändert"></span>`;
+}
+
 async function renderHome() {
   const me = state.session.user.id;
   const p = state.profile;
@@ -702,16 +711,18 @@ async function renderHome() {
   }
 
   // Tipprunde: Top 3 und Neuigkeiten
-  let board = [], feed = [];
+  let board = [], feed = [], trend = null;
   if (main) {
     const since = new Date(Date.now() - 7 * 86400000).toISOString();
-    const [b, fin, mem] = await Promise.all([
+    const [b, fin, mem, tr] = await Promise.all([
       sb.rpc("leaderboard", { p_group_id: main.id, p_period: "all" }),
       groupFilter(sb.from("match_list").select("id,home_name,away_name,home_goals,away_goals,kickoff,is_cup")
         .eq("status", "finished").gte("kickoff", since).order("kickoff", { ascending: false }).limit(100), main),
       sb.from("group_members").select("user_id").eq("group_id", main.id),
+      sb.rpc("group_rank_trend", { p_group_id: main.id }),
     ]);
     board = b.data ?? [];
+    trend = tr.data?.[0] ?? null;
     const memberIds = new Set((mem.data ?? []).map((x) => x.user_id));
     const finById = new Map((fin.data ?? []).map((m) => [m.id, m]));
     if (finById.size) {
@@ -737,7 +748,7 @@ async function renderHome() {
 
     <div class="stat">
       ${main ? (() => { const mine = board.find((r) => r.user_id === me); return html`
-      <a class="card stat-link" href="#/gruppe/${main.id}"><b>${mine ? mine.rank + "." : "–"}</b><span class="stat-group">${esc(main.name)}</span></a>`; })()
+      <a class="card stat-link" href="#/gruppe/${main.id}"><b class="rank-line">${mine ? mine.rank + "." : "–"}${trendIcon(trend)}</b><span class="stat-group">${esc(main.name)}</span></a>`; })()
       : `<a class="card stat-link" href="#/neu"><b>–</b><span>Keine Tipprunde</span></a>`}
       <a class="card stat-link" href="#/rangliste/alle"><b>${meWeek?.points ?? 0}</b><span>Punkte diese Woche</span></a>
       <a class="card stat-link" href="#/resultate"><b>${meAll?.points ?? 0}</b><span>Punkte total</span></a>
