@@ -327,3 +327,53 @@ div.pop, .invite-card.pop { display: block; }
 .tipcard .foot { margin-top: 8px; padding: 0 4px; }
 .linkbtn { border: 0; background: none; color: var(--muted); text-decoration: underline; font-size: 13px; cursor: pointer; padding: 4px; }
 @media (max-width: 360px) { .crest-big { --s: 52px; } .stepper button, .st-num { width: 46px; } .st-num { height: 46px; font-size: 24px; } }
+
+/* ---------- Startseite ---------- */
+.home-hello { display: flex; align-items: center; gap: 12px; margin: 6px 0 12px; }
+.stat-link { text-decoration: none; color: var(--text); }
+.tip-cta { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 4px; padding: 16px 18px; border-radius: 18px; text-decoration: none;
+  background: linear-gradient(135deg, var(--brand), #2fa77a); color: #fff; box-shadow: var(--shadow); }
+.tip-cta-big { font-size: 22px; font-weight: 800; }
+.tip-cta.done { background: var(--card); color: var(--text); border: 2px solid var(--ok); }
+@media (prefers-color-scheme: dark) { .tip-cta:not(.done) { color: #08140f; } }
+.team-next { display: block; text-decoration: none; color: var(--text); }
+.tn-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin-top: 8px; }
+.tn-mid { text-align: center; }
+.tn-tip { font-size: 26px; font-weight: 800; }
+.tn-vs { font-size: 20px; font-weight: 800; color: var(--muted); }
+.recent { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; text-decoration: none; color: var(--text); }
+.recent + .recent { border-top: 1px solid var(--line); }
+.recent-teams { min-width: 0; font-size: 14px; }
+.feed { padding: 4px 12px; }
+.feed-item { padding: 8px 0; font-size: 14px; }
+.feed-item + .feed-item { border-top: 1px solid var(--line); }
+
+/* ---------- Form-Knopf und Blatt ---------- */
+.form-btn { margin-top: 2px; border: 1px solid var(--line); background: var(--card); color: var(--brand); border-radius: 12px;
+  font-size: 12px; font-weight: 700; padding: 4px 10px; min-height: 28px; cursor: pointer; }
+.form-btn:active { transform: scale(.96); }
+.linkbtn.form-btn { border: 0; background: none; color: var(--brand); text-decoration: underline; font-size: 13px; padding: 4px; }
+body.no-scroll { overflow: hidden; }
+.sheet-wrap { position: fixed; inset: 0; z-index: 60; }
+.sheet-bg { position: absolute; inset: 0; background: rgba(0,0,0,.4); animation: fadein .2s; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; overflow-y: auto; background: var(--bg);
+  border-radius: 20px 20px 0 0; padding: 8px 16px calc(20px + env(safe-area-inset-bottom)); animation: slideup .25s ease-out;
+  max-width: 640px; margin: 0 auto; }
+@keyframes slideup { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .sheet, .sheet-bg { animation: none; } }
+.sheet-grip { width: 40px; height: 5px; border-radius: 3px; background: var(--line); margin: 4px auto 10px; }
+.sheet-close { position: absolute; right: 12px; top: 10px; width: 36px; height: 36px; border-radius: 50%; border: 0;
+  background: var(--card); font-size: 16px; cursor: pointer; }
+.sheet-body { position: relative; }
+.form-head { display: flex; align-items: center; gap: 12px; padding-right: 40px; }
+.form-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fc { width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; color: #fff; }
+.fc-S { background: var(--ok); } .fc-U { background: #8a949a; } .fc-N { background: var(--accent); }
+.fm-row { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 8px; padding: 9px 0; font-size: 14px; }
+.fm-row + .fm-row { border-top: 1px solid var(--line); }
+.fm-date { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.fm-teams { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fm-teams .own { font-weight: 800; }
+.fm-res { min-width: 44px; text-align: center; border-radius: 8px; padding: 3px 6px; color: #fff; font-weight: 800; font-variant-numeric: tabular-nums; }
+.nowrap { white-space: nowrap; }

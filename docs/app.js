@@ -153,7 +153,7 @@ function renderTop() {
 }
 
 async function route() {
-  const hash = location.hash || "#/spiele";
+  const hash = location.hash || "#/home";
   const [, page, arg] = hash.split("/");
 
   // Einladungslink merken, auch wenn man noch nicht angemeldet ist
@@ -186,12 +186,12 @@ async function route() {
 
   // Wer noch in keiner Tipprunde ist, landet zuerst im Onboarding
   const flow = ["start", "neu", "beitreten", "willkommen"].includes(page);
-  if (!flow && (page === "spiele" || !page) && !store.get("onboardSkip", false)) {
+  if (!flow && (page === "home" || page === "spiele" || !page) && !store.get("onboardSkip", false)) {
     const groups = await loadGroups().catch(() => []);
     if (!groups.length) { location.hash = "#/start"; return; }
   }
 
-  const tab = { spiele: "spiele", resultate: "resultate", spiel: "resultate", rangliste: "rangliste",
+  const tab = { home: "home", spiele: "spiele", resultate: "mehr", spiel: "mehr", rangliste: "rangliste",
                 gruppen: "gruppen", gruppe: "gruppen", neu: "gruppen", beitreten: "gruppen" }[page] ?? "mehr";
   for (const a of $tabbar.querySelectorAll("a")) a.classList.toggle("on", a.dataset.tab === tab);
   $tabbar.hidden = page === "start" || page === "willkommen";
@@ -203,6 +203,7 @@ async function route() {
       case "neu": return await renderNeu(arg);
       case "beitreten": return renderBeitreten(arg);
       case "willkommen": return await renderWillkommen(arg);
+      case "home": return await renderHome();
       case "spiele": return await renderSpiele(arg);
       case "resultate": return await renderResultate();
       case "spiel": return await renderSpielDetail(Number(arg));
@@ -214,7 +215,7 @@ async function route() {
       case "regeln": return renderRegeln();
       case "admin": return await renderAdmin();
       case "mehr": return renderMehr();
-      default: location.hash = "#/spiele";
+      default: location.hash = "#/home";
     }
   } catch (e) {
     console.error(e);
@@ -363,7 +364,7 @@ function renderStart() {
     </div>
   `);
   $view.querySelector("#skip").onclick = (e) => {
-    e.preventDefault(); store.set("onboardSkip", true); location.hash = "#/spiele";
+    e.preventDefault(); store.set("onboardSkip", true); location.hash = "#/home";
   };
 }
 
@@ -504,7 +505,7 @@ async function renderNeu() {
 async function renderWillkommen(id) {
   const groups = await loadGroups(true);
   const g = groups.find((x) => x.id === id);
-  if (!g) { location.hash = "#/spiele"; return; }
+  if (!g) { location.hash = "#/home"; return; }
   store.set("activeGroup", g.id);
   const link = `${appUrl()}?join=${g.invite_code}`;
   const isOwner = g.owner_id === state.session.user.id;
@@ -551,7 +552,7 @@ function renderNewPassword() {
     if (error) return toast(errMsg(error), true);
     state.recovery = false;
     toast("Passwort gespeichert.");
-    location.hash = "#/spiele";
+    location.hash = "#/home";
     route();
   };
 }
@@ -628,6 +629,273 @@ async function pointsBanner() {
   if (seen !== null && total > seen) return { gained: total - seen, total };
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Startseite (persönliches Cockpit)
+// ---------------------------------------------------------------------------
+
+function countdown(iso) {
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return "jetzt";
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `in ${min} Min.`;
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h < 24) return `in ${h} Std.${m ? ` ${m} Min.` : ""}`;
+  const d = Math.round(h / 24);
+  return d === 1 ? "morgen" : `in ${d} Tagen`;
+}
+
+// Filter für alle Tipprunden zusammen (Tabellengruppen + Cupspiele der Teams)
+function allGroupsFilter(q, groups) {
+  const leagues = [...new Set(groups.flatMap((g) => g.league_ids ?? []))];
+  const teams = [...new Set(groups.map((g) => g.team_id).filter(Boolean))];
+  const parts = [];
+  if (leagues.length) parts.push(`league_id.in.(${leagues.join(",")})`);
+  for (const t of teams) parts.push(`and(is_cup.eq.true,or(home_team_id.eq.${t},away_team_id.eq.${t}))`);
+  return parts.length ? q.or(parts.join(",")) : q;
+}
+
+async function renderHome() {
+  const me = state.session.user.id;
+  const p = state.profile;
+  const groups = await loadGroups();
+  const main = groups[0] ?? null;
+  const now = new Date().toISOString();
+  const in7 = new Date(Date.now() + 7 * 86400000).toISOString();
+
+  // Offene Spiele der nächsten 7 Tage (in den eigenen Tipprunden, sonst alle)
+  let openQ = sb.from("match_list").select("id,kickoff").eq("status", "scheduled").gt("kickoff", now).lte("kickoff", in7).order("kickoff").limit(400);
+  if (groups.length) openQ = allGroupsFilter(openQ, groups);
+
+  const teamId = p.team_id;
+  const [week, all, open, myTips, nextTeam, teamLeague] = await Promise.all([
+    sb.rpc("leaderboard", { p_group_id: null, p_period: "week" }),
+    sb.rpc("leaderboard", { p_group_id: null, p_period: "all" }),
+    openQ,
+    sb.from("tips").select("match_id,home_goals,away_goals,points").eq("user_id", me),
+    teamId ? sb.from("match_list").select("*").eq("status", "scheduled").gt("kickoff", now)
+      .or(`home_team_id.eq.${teamId},away_team_id.eq.${teamId}`).order("kickoff").limit(1) : { data: [] },
+    teamId ? sb.from("team_current_league").select("*").eq("team_id", teamId).maybeSingle() : { data: null },
+  ]);
+  for (const r of [week, all, open, myTips]) if (r.error) throw r.error;
+
+  const tipMap = new Map(myTips.data.map((t) => [t.match_id, t]));
+  const openMatches = open.data.filter((m) => !tipMap.has(m.id));
+  const meWeek = week.data.find((r) => r.user_id === me);
+  const meAll = all.data.find((r) => r.user_id === me);
+
+  // Letzte ausgewertete Tipps
+  const scoredIds = myTips.data.filter((t) => t.points !== null).map((t) => t.match_id);
+  let recent = [];
+  if (scoredIds.length) {
+    const { data } = await sb.from("match_list").select("*").in("id", scoredIds.slice(-300)).order("kickoff", { ascending: false }).limit(5);
+    recent = data ?? [];
+  }
+
+  // Mini-Tabelle rund um das eigene Team
+  let miniTable = [];
+  if (teamLeague.data) {
+    const { data } = await sb.from("league_standings").select("rank,played,points,team_id,teams(name)")
+      .eq("league_id", teamLeague.data.league_id).order("rank");
+    const i = (data ?? []).findIndex((r) => r.team_id === teamId);
+    miniTable = i < 0 ? [] : data.slice(Math.max(0, i - 2), i + 3);
+  }
+
+  // Tipprunde: Top 3 und Neuigkeiten
+  let board = [], feed = [];
+  if (main) {
+    const since = new Date(Date.now() - 7 * 86400000).toISOString();
+    const [b, fin, mem] = await Promise.all([
+      sb.rpc("leaderboard", { p_group_id: main.id, p_period: "all" }),
+      groupFilter(sb.from("match_list").select("id,home_name,away_name,home_goals,away_goals,kickoff,is_cup")
+        .eq("status", "finished").gte("kickoff", since).order("kickoff", { ascending: false }).limit(100), main),
+      sb.from("group_members").select("user_id").eq("group_id", main.id),
+    ]);
+    board = b.data ?? [];
+    const memberIds = new Set((mem.data ?? []).map((x) => x.user_id));
+    const finById = new Map((fin.data ?? []).map((m) => [m.id, m]));
+    if (finById.size) {
+      const { data: hits } = await sb.from("tips").select("user_id,match_id,points,home_goals,away_goals,profiles(username)")
+        .in("match_id", [...finById.keys()]).gte("points", 8);
+      feed = (hits ?? []).filter((h) => memberIds.has(h.user_id))
+        .map((h) => ({ ...h, m: finById.get(h.match_id) }))
+        .sort((a, b) => new Date(b.m.kickoff) - new Date(a.m.kickoff) || b.points - a.points).slice(0, 5);
+    }
+  }
+
+  const next = openMatches[0];
+  const nt = nextTeam.data?.[0];
+  const ntTip = nt ? tipMap.get(nt.id) : null;
+  const hour = Number(new Intl.DateTimeFormat("de-CH", { timeZone: TZ, hour: "numeric" }).format(new Date()));
+  const hello = hour < 11 ? "Guete Morge" : hour < 18 ? "Hoi" : "Guete Abig";
+
+  setView(html`
+    <div class="home-hello">
+      ${avatar(p.picture, p.username, 52)}
+      <div><div class="muted small">${hello}</div><h1 style="margin:0">${esc(p.username)} 👋</h1></div>
+    </div>
+
+    <div class="stat">
+      <a class="card stat-link" href="#/rangliste/alle"><b>${meWeek && meWeek.points > 0 ? meWeek.rank + "." : "–"}</b><span>Rang diese Woche</span></a>
+      <a class="card stat-link" href="#/rangliste/alle"><b>${meWeek?.points ?? 0}</b><span>Punkte diese Woche</span></a>
+      <a class="card stat-link" href="#/resultate"><b>${meAll?.points ?? 0}</b><span>Punkte total</span></a>
+    </div>
+
+    <a class="tip-cta ${openMatches.length ? "" : "done"}" href="#/spiele${main ? "/" + main.id : ""}">
+      ${openMatches.length ? html`
+        <span class="tip-cta-big">📝 Jetzt tippen</span>
+        <span><b>${openMatches.length} ${openMatches.length === 1 ? "Spiel" : "Spiele"} offen</b> · nächster Anpfiff ${countdown(next.kickoff)}</span>`
+      : `<span class="tip-cta-big">✅ Alles getippt!</span><span>Die nächsten Spiele findest du unter „Tippen“.</span>`}
+    </a>
+
+    ${nt ? html`
+      <h2>⭐ Dein Team</h2>
+      <a class="card team-next" href="#/spiele${main ? "/" + main.id : ""}">
+        <div class="muted small center">${esc(fmtDay(nt.kickoff))}, ${fmtTime(nt.kickoff)} Uhr · ${countdown(nt.kickoff)}</div>
+        <div class="tn-row">
+          <div class="side">${crest(nt.home_logo, nt.home_name, 48)}<div class="tname">${esc(nt.home_name)}</div></div>
+          <div class="tn-mid">${ntTip ? `<div class="tn-tip">${ntTip.home_goals} : ${ntTip.away_goals}</div><div class="muted small">dein Tipp</div>` : `<div class="tn-vs">vs</div><div class="small" style="color:var(--accent)">noch nicht getippt</div>`}</div>
+          <div class="side">${crest(nt.away_logo, nt.away_name, 48)}<div class="tname">${esc(nt.away_name)}</div></div>
+        </div>
+      </a>` : ""}
+    ${miniTable.length ? html`
+      <div class="card" style="padding:4px 10px">
+        <div class="muted small" style="padding:6px 2px 0">${esc(teamLeague.data.source_name)} · ${esc(teamLeague.data.league_name)}</div>
+        <table class="tbl">${miniTable.map((r) => `<tr class="${r.team_id === teamId ? "me" : ""}"><td>${r.rank}</td><td class="name">${esc(r.teams?.name)}</td><td class="nowrap muted small">${r.played} Sp</td><td><b>${r.points}</b></td></tr>`).join("")}</table>
+        <p class="small center" style="margin:6px 0"><button type="button" class="linkbtn form-btn" data-team="${teamId}">Ganze Tabelle & Form ansehen ›</button></p>
+      </div>` : !teamId ? `<div class="card"><p style="margin:0">⚽ Wähle deinen Verein unter <a href="#/profil">Profil</a>, dann siehst du hier sein nächstes Spiel und die Tabelle.</p></div>` : ""}
+
+    ${recent.length ? html`
+      <h2>Deine letzten Resultate</h2>
+      <div class="card" style="padding:2px 12px">
+        ${recent.map((m) => { const t = tipMap.get(m.id); return html`
+          <a class="recent" href="#/spiel/${m.id}">
+            <span class="recent-teams">${esc(m.home_name)} <b>${m.home_goals}:${m.away_goals}</b> ${esc(m.away_name)}<br><span class="muted small">Dein Tipp ${t.home_goals}:${t.away_goals}</span></span>
+            ${pointsBadge(t.points, m.is_cup ? 20 : 10)}
+          </a>`; }).join("")}
+      </div>
+      <p class="small center"><a href="#/resultate">Alle meine Tipps ›</a></p>` : ""}
+
+    ${main ? html`
+      <h2>👥 ${esc(main.name)}</h2>
+      ${podium(board) || ""}
+      <div class="card" style="padding:4px 10px"><table class="tbl board">
+        ${boardRows(board.filter((r, i) => i < 3 || r.user_id === me), me, { tips: false })}
+      </table></div>
+      ${feed.length ? html`
+        <h3>Neuigkeiten</h3>
+        <div class="card feed">
+          ${feed.map((f) => html`<div class="feed-item">${f.points >= (f.m.is_cup ? 20 : 10) ? "🎯" : "✨"} <b>${esc(f.profiles?.username ?? "?")}</b> ${f.points >= (f.m.is_cup ? 20 : 10) ? "hat genau getippt" : "lag fast richtig"}: ${esc(f.m.home_name)} – ${esc(f.m.away_name)} ${f.m.home_goals}:${f.m.away_goals} <span class="badge">+${f.points}</span></div>`).join("")}
+        </div>` : ""}
+      <p class="small center"><a href="#/gruppe/${main.id}">Zur Tipprunde ›</a></p>
+    ` : html`
+      <div class="invite-card" style="text-align:center">
+        <div style="font-size:34px">👥</div>
+        <b>Tippe mit Freunden</b>
+        <p class="muted small" style="margin:4px 0 10px">Gegen Freunde tippen macht am meisten Spass.</p>
+        <div class="cta-grid" style="margin:0">
+          <a class="cta" href="#/neu"><span class="cta-emoji">✨</span><b>Tipprunde starten</b></a>
+          <a class="cta alt" href="#/beitreten"><span class="cta-emoji">🔑</span><b>Code eingeben</b></a>
+        </div>
+      </div>`}
+  `);
+}
+
+// ---------------------------------------------------------------------------
+// Form eines Teams: Tabelle der Gruppe und alle Spiele der Saison (als Blatt von unten)
+// ---------------------------------------------------------------------------
+
+function closeSheet() {
+  document.querySelector(".sheet-wrap")?.remove();
+  document.body.classList.remove("no-scroll");
+}
+
+async function showForm(teamId) {
+  closeSheet();
+  const wrap = document.createElement("div");
+  wrap.className = "sheet-wrap";
+  wrap.innerHTML = `<div class="sheet-bg"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="Form"><div class="sheet-grip"></div><div class="sheet-body"><div class="loading">Laden …</div></div></div>`;
+  document.body.appendChild(wrap);
+  document.body.classList.add("no-scroll");
+  wrap.querySelector(".sheet-bg").onclick = closeSheet;
+  const body = wrap.querySelector(".sheet-body");
+
+  try {
+    const [team, league, games] = await Promise.all([
+      sb.from("teams").select("id,name,logo_url").eq("id", teamId).maybeSingle(),
+      sb.from("team_current_league").select("*").eq("team_id", teamId).maybeSingle(),
+      sb.from("match_list").select("*").or(`home_team_id.eq.${teamId},away_team_id.eq.${teamId}`)
+        .order("kickoff", { ascending: false }).limit(60),
+    ]);
+    if (team.error) throw team.error;
+    const t = team.data;
+    if (!t) throw new Error("Team nicht gefunden.");
+    let table = [];
+    if (league.data) {
+      const { data } = await sb.from("league_standings")
+        .select("rank,played,won,drawn,lost,goals_for,goals_against,points,team_id,teams(name)")
+        .eq("league_id", league.data.league_id).order("rank");
+      table = data ?? [];
+    }
+    const played = (games.data ?? []).filter((m) => m.status === "finished");
+    const upcoming = (games.data ?? []).filter((m) => m.status === "scheduled" && new Date(m.kickoff) > new Date()).reverse().slice(0, 3);
+    const res = (m) => {
+      const own = m.home_team_id === teamId ? m.home_goals : m.away_goals;
+      const opp = m.home_team_id === teamId ? m.away_goals : m.home_goals;
+      return own > opp ? "S" : own < opp ? "N" : "U";
+    };
+    const last5 = played.slice(0, 5);
+    const sum = played.reduce((a, m) => { a[res(m)]++; return a; }, { S: 0, U: 0, N: 0 });
+    const label = league.data?.label ?? t.name;
+
+    body.innerHTML = html`
+      <button type="button" class="sheet-close" aria-label="Schliessen">✕</button>
+      <div class="form-head">
+        ${crest(t.logo_url, t.name, 64)}
+        <div><h2 style="margin:0">${esc(label)}</h2>
+          ${league.data ? `<div class="muted small">${esc(league.data.source_name)} · ${esc(league.data.league_name)} · ${league.data.rank}. Platz</div>` : ""}</div>
+      </div>
+
+      <h3>Form (letzte ${last5.length})</h3>
+      <div class="form-chips">
+        ${last5.length ? last5.map((m) => `<span class="fc fc-${res(m)}" title="${esc(m.home_name)} ${m.home_goals}:${m.away_goals} ${esc(m.away_name)}">${res(m)}</span>`).join("") : `<span class="muted small">Noch keine Spiele.</span>`}
+        ${played.length ? `<span class="muted small" style="margin-left:6px">Saison: ${sum.S} S · ${sum.U} U · ${sum.N} N</span>` : ""}
+      </div>
+
+      ${table.length ? html`
+        <h3>Tabelle</h3>
+        <div class="card" style="padding:4px 8px"><table class="tbl">
+          <tr><th>#</th><th class="l">Team</th><th>Sp</th><th>S</th><th>U</th><th>N</th><th>Tore</th><th>P</th></tr>
+          ${table.map((r) => `<tr class="${r.team_id === teamId ? "me" : ""}"><td>${r.rank}</td><td class="name">${esc(r.teams?.name)}</td><td>${r.played}</td><td>${r.won}</td><td>${r.drawn}</td><td>${r.lost}</td><td>${r.goals_for}:${r.goals_against}</td><td><b>${r.points}</b></td></tr>`).join("")}
+        </table></div>` : ""}
+
+      ${upcoming.length ? html`
+        <h3>Nächste Spiele</h3>
+        <div class="card" style="padding:2px 12px">${upcoming.map((m) => html`
+          <div class="fm-row"><span class="fm-date">${new Intl.DateTimeFormat("de-CH", { timeZone: TZ, day: "2-digit", month: "2-digit" }).format(new Date(m.kickoff))}</span>
+          <span class="fm-teams ${m.home_team_id === teamId ? "home" : ""}">${esc(m.home_name)} – ${esc(m.away_name)}</span><span class="muted small">${fmtTime(m.kickoff)}</span></div>`).join("")}</div>` : ""}
+
+      <h3>Alle Spiele dieser Saison (${played.length})</h3>
+      <div class="card" style="padding:2px 12px">
+        ${played.map((m) => html`
+          <div class="fm-row"><span class="fm-date">${new Intl.DateTimeFormat("de-CH", { timeZone: TZ, day: "2-digit", month: "2-digit" }).format(new Date(m.kickoff))}</span>
+          <span class="fm-teams"><span class="${m.home_team_id === teamId ? "own" : ""}">${esc(m.home_name)}</span> – <span class="${m.away_team_id === teamId ? "own" : ""}">${esc(m.away_name)}</span>${m.is_cup ? ' <span class="cup small">Cup</span>' : ""}</span>
+          <span class="fm-res fc-${res(m)}">${m.home_goals}:${m.away_goals}</span></div>`).join("") || `<div class="empty">Noch keine Spiele gespielt.</div>`}
+      </div>
+    `;
+    body.querySelector(".sheet-close").onclick = closeSheet;
+  } catch (e) {
+    body.innerHTML = `<p class="err">${esc(errMsg(e))}</p><button class="btn" type="button">Schliessen</button>`;
+    body.querySelector("button").onclick = closeSheet;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest?.(".form-btn");
+  if (b) { e.preventDefault(); e.stopPropagation(); vibrate(8); showForm(Number(b.dataset.team)); }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+window.addEventListener("hashchange", closeSheet);
 
 async function renderSpiele(groupArg) {
   await loadMeta();
@@ -720,11 +988,11 @@ function tipCard(m, t, { mine = false, label = "" } = {}) {
       <div class="tc-date">${esc(fmtDay(m.kickoff))}, ${fmtTime(m.kickoff)} Uhr</div>
       <div class="tc-league">${label}</div>
       <div class="duel">
-        <div class="side">${crest(m.home_logo, m.home_name)}<div class="tname">${esc(m.home_name)}</div></div>
+        <div class="side">${crest(m.home_logo, m.home_name)}<div class="tname">${esc(m.home_name)}</div><button type="button" class="form-btn" data-team="${m.home_team_id}">📈 Form</button></div>
         ${stepper("h", t?.home_goals ?? 0, m.home_name)}
         <div class="colon">:</div>
         ${stepper("a", t?.away_goals ?? 0, m.away_name)}
-        <div class="side">${crest(m.away_logo, m.away_name)}<div class="tname">${esc(m.away_name)}</div></div>
+        <div class="side">${crest(m.away_logo, m.away_name)}<div class="tname">${esc(m.away_name)}</div><button type="button" class="form-btn" data-team="${m.away_team_id}">📈 Form</button></div>
       </div>
       <div class="foot">
         <span class="status">${set ? '<span class="saved">✓ getippt</span>' : '<span class="muted">Tippe auf die Pfeile</span>'}</span>
@@ -1113,6 +1381,7 @@ function renderMehr() {
   setView(html`
     <h1>Mehr</h1>
     <div class="list">
+      <a class="item" href="#/resultate"><span>✅ Meine Tipps & Resultate</span><span class="muted">›</span></a>
       <a class="item" href="#/tabellen"><span>📊 Tabellen</span><span class="muted">›</span></a>
       <a class="item" href="#/regeln"><span>📖 Spielregeln</span><span class="muted">›</span></a>
       <a class="item" href="#/profil"><span>👤 Profil</span><span class="muted">›</span></a>
@@ -1120,7 +1389,7 @@ function renderMehr() {
       <button class="item" id="logout"><span>🚪 Abmelden</span><span></span></button>
     </div>
   `);
-  $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/spiele"; };
+  $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/home"; };
 }
 
 // Bild quadratisch zuschneiden und auf 256 px verkleinern (spart Speicher und Daten)
@@ -1236,7 +1505,7 @@ function renderProfil() {
     if (error) return toast(errMsg(error), true);
     e.target.reset(); toast("Passwort geändert.");
   };
-  $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/spiele"; };
+  $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/home"; };
 }
 
 
