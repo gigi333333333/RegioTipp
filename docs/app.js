@@ -736,7 +736,9 @@ async function renderHome() {
     </div>
 
     <div class="stat">
-      <a class="card stat-link" href="#/rangliste/alle"><b>${meWeek && meWeek.points > 0 ? meWeek.rank + "." : "–"}</b><span>Rang diese Woche</span></a>
+      ${main ? (() => { const mine = board.find((r) => r.user_id === me); return html`
+      <a class="card stat-link" href="#/gruppe/${main.id}"><b>${mine ? mine.rank + "." : "–"}</b><span class="stat-group">${esc(main.name)}</span></a>`; })()
+      : `<a class="card stat-link" href="#/neu"><b>–</b><span>Keine Tipprunde</span></a>`}
       <a class="card stat-link" href="#/rangliste/alle"><b>${meWeek?.points ?? 0}</b><span>Punkte diese Woche</span></a>
       <a class="card stat-link" href="#/resultate"><b>${meAll?.points ?? 0}</b><span>Punkte total</span></a>
     </div>
