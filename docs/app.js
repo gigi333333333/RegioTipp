@@ -3,6 +3,7 @@
 
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 import { SUPABASE_URL, SUPABASE_KEY } from "./config.js";
+import { impressumHtml, datenschutzHtml, agbHtml } from "./legal.js";
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -144,6 +145,10 @@ function confetti(amount = 120) {
   })();
 }
 
+function legalLinks() {
+  return `<p class="legal-links small center"><a href="#/impressum">Impressum</a> · <a href="#/datenschutz">Datenschutz</a> · <a href="#/nutzungsbedingungen">Nutzungsbedingungen</a></p>`;
+}
+
 function renderTop() {
   if (state.profile) {
     $topRight.innerHTML = `<a href="#/profil" class="me-link">${avatar(state.profile.picture, state.profile.username, 30)}<span>${esc(state.profile.username)}</span></a>`;
@@ -159,6 +164,16 @@ async function route() {
   // Einladungslink merken, auch wenn man noch nicht angemeldet ist
   const joinCode = new URLSearchParams(location.search).get("join") || (page === "join" ? arg : null);
   if (joinCode) store.set("pendingJoin", joinCode.toUpperCase());
+
+  // Rechtliche Seiten sind auch ohne Anmeldung erreichbar
+  const legal = { impressum: impressumHtml, datenschutz: datenschutzHtml, nutzungsbedingungen: agbHtml }[page];
+  if (legal) {
+    $tabbar.hidden = !state.session;
+    renderTop();
+    setView(`<p><a href="javascript:history.back()">‹ Zurück</a></p>${legal()}${legalLinks()}`);
+    window.scrollTo(0, 0);
+    return;
+  }
 
   if (state.recovery) return renderNewPassword();
   if (!state.session) { $tabbar.hidden = true; renderTop(); return renderAuth(); }
@@ -277,6 +292,7 @@ async function renderAuth(mode = "register") {
         <label class="field"><span>Passwort</span>
           <input type="password" name="password" minlength="6" required autocomplete="new-password" placeholder="mindestens 6 Zeichen"></label>
         <button class="btn primary block big" type="submit">${invite ? "Beitreten & loslegen 🚀" : "Kostenlos starten 🚀"}</button>
+        <p class="small muted center consent">Mit der Registrierung akzeptierst du die <a href="#/nutzungsbedingungen">Nutzungsbedingungen</a> und die <a href="#/datenschutz">Datenschutzerklärung</a>.</p>
         <p class="small center">Schon dabei? <a href="#" data-mode="login">Anmelden</a></p>
       </form>`,
     login: html`
@@ -297,7 +313,7 @@ async function renderAuth(mode = "register") {
       </form>`,
   };
 
-  setView(`<div class="auth">${hero}${forms[mode]}</div>`);
+  setView(`<div class="auth">${hero}${forms[mode]}${legalLinks()}</div>`);
 
   for (const a of $view.querySelectorAll("[data-mode]")) {
     a.onclick = (e) => { e.preventDefault(); renderAuth(a.dataset.mode); };
@@ -1412,6 +1428,9 @@ function renderMehr() {
       <a class="item" href="#/resultate"><span>✅ Meine Tipps & Resultate</span><span class="muted">›</span></a>
       <a class="item" href="#/tabellen"><span>📊 Tabellen</span><span class="muted">›</span></a>
       <a class="item" href="#/regeln"><span>📖 Spielregeln</span><span class="muted">›</span></a>
+      <a class="item" href="#/datenschutz"><span>🔒 Datenschutz</span><span class="muted">›</span></a>
+      <a class="item" href="#/nutzungsbedingungen"><span>📄 Nutzungsbedingungen</span><span class="muted">›</span></a>
+      <a class="item" href="#/impressum"><span>ℹ️ Impressum</span><span class="muted">›</span></a>
       <a class="item" href="#/profil"><span>👤 Profil</span><span class="muted">›</span></a>
       ${state.profile?.is_admin ? `<a class="item" href="#/admin"><span>🛠️ Admin</span><span class="muted">›</span></a>` : ""}
       <button class="item" id="logout"><span>🚪 Abmelden</span><span></span></button>
@@ -1469,6 +1488,11 @@ function renderProfil() {
     </form>
     <p class="muted small">E-Mail: ${esc(state.session.user.email)}</p>
     <p><button class="btn danger block" id="logout">Abmelden</button></p>
+    <h2>Konto löschen</h2>
+    <div class="card">
+      <p class="small" style="margin-top:0">Dein Konto, dein Profil, alle Tipps, dein Profilbild und deine Mitgliedschaften werden sofort und endgültig gelöscht. Tipprunden, die du erstellt hast, gehen an ein anderes Mitglied über.</p>
+      <button class="btn danger block" id="delete">🗑️ Konto endgültig löschen</button>
+    </div>
   `);
 
   const file = $view.querySelector("#file");
@@ -1534,6 +1558,21 @@ function renderProfil() {
     e.target.reset(); toast("Passwort geändert.");
   };
   $view.querySelector("#logout").onclick = async () => { await sb.auth.signOut(); location.hash = "#/home"; };
+  $view.querySelector("#delete").onclick = async () => {
+    const name = prompt(`Zum Bestätigen deinen Benutzernamen eingeben: ${p.username}`);
+    if (name === null) return;
+    if (name.trim() !== p.username) return toast("Der Name stimmt nicht. Konto wurde nicht gelöscht.", true);
+    try {
+      await sb.storage.from("avatars").remove([`${state.session.user.id}/avatar.jpg`]).catch(() => {});
+      const { error } = await sb.rpc("delete_my_account");
+      if (error) throw error;
+      await sb.auth.signOut();
+      try { localStorage.clear(); } catch { /* egal */ }
+      state.profile = null; state.groups = null;
+      location.hash = "#/home";
+      toast("Dein Konto wurde gelöscht. Schade, dass du gehst! 👋");
+    } catch (e) { toast(errMsg(e), true); }
+  };
 }
 
 
